@@ -855,6 +855,8 @@ public class StillCaptureManager {
         if (mRecordingWriter == null) {
             return;
         }
+        // Every path below queues exactly one row, so this is the row count.
+        mStereoMetaRows++;
         RecordingProtos.StillMetaData.Builder b =
                 RecordingProtos.StillMetaData.newBuilder()
                         .setBurstId(burstId)
@@ -1048,6 +1050,171 @@ public class StillCaptureManager {
                 } catch (IllegalArgumentException e) {
                     Log.w(TAG, "physical " + pid + " crop refused: " + e);
                 }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ pairs, in sequence
+    //
+    // ON THIS PHONE A SIMULTANEOUS CAPTURE IS A PAIR. Asking four physical outputs on one
+    // request kills the camera: the S24 Ultra HAL logs "More than 2 real time pipeline
+    // request How to handle? numOfRealtimePipelines = 4", cancels the frame and raises
+    // ERROR_CAMERA_DEVICE. Measured 2026-09-20, twice, the second time under control. What
+    // the streaming probe then showed is that a session BOUND with all four lenses serves
+    // any pair on request, half a second each, from one session -- so the all-lens shot is
+    // not one instant from four sensors, it is six instants from two sensors each, and
+    // against a static target that measures every baseline just the same.
+
+    /**
+     * Every pair of the given lenses, the published metric pair first.
+     *
+     * Order is the point: (uw, main) carries the only offset the device states, 18.02 mm,
+     * and every other pair is measured against it. Pairs with the ultrawide come next, then
+     * pairs with the main camera, then the rest -- so if the sequence is cut short, what
+     * survives is the most useful part of it.
+     */
+    public static java.util.List<String[]> lensPairs(java.util.List<String> ids, String uw,
+                                                     String main) {
+        java.util.List<String[]> out = new java.util.ArrayList<>();
+        if (ids.contains(uw) && ids.contains(main)) {
+            out.add(new String[]{uw, main});
+        }
+        for (String anchor : new String[]{uw, main}) {
+            if (!ids.contains(anchor)) {
+                continue;
+            }
+            for (String id : ids) {
+                if (!id.equals(uw) && !id.equals(main)) {
+                    out.add(new String[]{anchor, id});
+                }
+            }
+        }
+        java.util.List<String> rest = new java.util.ArrayList<>();
+        for (String id : ids) {
+            if (!id.equals(uw) && !id.equals(main)) {
+                rest.add(id);
+            }
+        }
+        for (int i = 0; i < rest.size(); i++) {
+            for (int j = i + 1; j < rest.size(); j++) {
+                out.add(new String[]{rest.get(i), rest.get(j)});
+            }
+        }
+        return out;
+    }
+
+    /** The lens pairs this session can capture, given what it was built with. */
+    public java.util.List<String[]> configuredLensPairs() {
+        return lensPairs(new java.util.ArrayList<>(mLensReaders.keySet()), sPhysUltrawide,
+                sPhysMain);
+    }
+
+    public android.view.Surface lensSurface(String physicalId) {
+        ImageReader r = mLensReaders.get(physicalId);
+        return r == null ? null : r.getSurface();
+    }
+
+    /** One-shot pair captures issued this run, so the receipt can expect that many bursts. */
+    private volatile int mOneShotBursts = 0;
+
+    /**
+     * Stereo metadata rows queued this run -- one per lens per burst that a capture callback
+     * actually described. A stereo file on the card with no row behind it is a warm-up frame
+     * that an armed reader kept, not a capture, and only this count can tell the two apart.
+     */
+    private volatile int mStereoMetaRows = 0;
+
+    public int oneShotStereoBursts() {
+        return mOneShotBursts;
+    }
+
+    public int stereoMetaRows() {
+        return mStereoMetaRows;
+    }
+
+    public void resetOneShotBursts() {
+        mOneShotBursts = 0;
+        mStereoMetaRows = 0;
+    }
+
+    /**
+     * One simultaneous frame from exactly the two lenses named, as its own burst.
+     *
+     * The caller has already put these two physical streams into the repeating request and
+     * let the second sensor settle. Only these two readers are armed and only these two
+     * surfaces are targeted; the callback writes metadata for these two and no other, because
+     * a lens that was not in the request has no physical result and would otherwise be
+     * written a row from the logical result -- a picture that does not exist, described.
+     */
+    public void captureLensPair(CameraDevice device, CameraCaptureSession session,
+                                CaptureRequest.Builder baseRequest, File outputDir,
+                                RecordingWriter writer, final String[] pair) {
+        if (!mStereoSupported || session == null || pair == null || pair.length != 2) {
+            Log.w(TAG, "pair capture requested but unavailable");
+            return;
+        }
+        if (!mLensReaders.containsKey(pair[0]) || !mLensReaders.containsKey(pair[1])) {
+            Log.w(TAG, "pair " + pair[0] + "+" + pair[1] + " is not configured");
+            return;
+        }
+        mOutputDir = outputDir;
+        mRecordingWriter = writer;
+        mStereoBurstId = SystemClock.elapsedRealtimeNanos();
+        for (java.util.Map.Entry<String, java.util.concurrent.atomic.AtomicBoolean> e
+                : mLensWanted.entrySet()) {
+            e.getValue().set(e.getKey().equals(pair[0]) || e.getKey().equals(pair[1]));
+        }
+        try {
+            CaptureRequest.Builder b;
+            if (Build.VERSION.SDK_INT >= 28) {
+                b = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE,
+                        new java.util.HashSet<>(java.util.Arrays.asList(pair)));
+            } else {
+                b = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            }
+            copyBase(baseRequest, b, false);
+            applyFullFieldOfView(b);
+            if (Build.VERSION.SDK_INT >= 28) {
+                for (String pid : pair) {
+                    Rect active = physicalActiveArray(pid);
+                    if (active != null) {
+                        try {
+                            b.setPhysicalCameraKey(CaptureRequest.SCALER_CROP_REGION, active,
+                                    pid);
+                        } catch (IllegalArgumentException e) {
+                            Log.w(TAG, "physical " + pid + " crop refused: " + e);
+                        }
+                    }
+                }
+            }
+            for (String pid : pair) {
+                b.addTarget(mLensReaders.get(pid).getSurface());
+            }
+            final long burstId = mStereoBurstId;
+            session.capture(b.build(), new CameraCaptureSession.CaptureCallback() {
+                @Override
+                public void onCaptureCompleted(@NonNull CameraCaptureSession s,
+                                               @NonNull CaptureRequest request,
+                                               @NonNull TotalCaptureResult result) {
+                    writeStereoMeta(result, pair[0], lensTag(pair[0]), 0, burstId,
+                            CaptureMode.OBJECT, 0L);
+                    writeStereoMeta(result, pair[1], lensTag(pair[1]), 1, burstId,
+                            CaptureMode.OBJECT, 0L);
+                }
+            }, mHandler);
+            mOneShotBursts++;
+            Log.i(TAG, "pair capture requested: physical " + pair[0] + "+" + pair[1]
+                    + " (" + lensTag(pair[0]) + "+" + lensTag(pair[1]) + ") burst " + burstId);
+        } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
+            Log.e(TAG, "pair capture failed: " + e);
+            // DISARM. The warm-up request is still streaming into these readers, and an
+            // armed reader keeps the next frame it sees whatever request produced it. Left
+            // armed after a failed capture, both lenses wrote a warm-up frame under this
+            // burst id -- a pair-shaped file with no crop and no metadata row, which is what
+            // five of the six bursts of the first L1 sequence were. A failed pair must leave
+            // nothing on the card, so the receipt's armed-versus-complete count can see it.
+            for (java.util.concurrent.atomic.AtomicBoolean want : mLensWanted.values()) {
+                want.set(false);
             }
         }
     }
@@ -1323,16 +1490,15 @@ public class StillCaptureManager {
                         + " (range " + zoom + "); 1.0 would be main-camera framing");
             }
         }
-        if (Build.VERSION.SDK_INT < 28) {
-            return;
-        }
-        for (String pid : new String[]{sPhysUltrawide, sPhysMain}) {
-            Rect active = physicalActiveArray(pid);
-            if (active != null) {
-                b.setPhysicalCameraKey(CaptureRequest.SCALER_CROP_REGION, active, pid);
-                Log.d(TAG, "physical " + pid + " crop set to its own array " + active);
-            }
-        }
+        // NO PER-PHYSICAL CROP HERE. This used to set SCALER_CROP_REGION for the ultrawide
+        // and the main camera unconditionally, and setPhysicalCameraKey validates its id
+        // against the set the builder was created with. A pair request built for {2, 6}
+        // threw "Physical camera id: 5 is not valid!" -- five of the six pairs of the first
+        // L1 sequence on 2026-09-20 -- and the readers, already armed, kept warm-up frames
+        // in their place: files that looked like pairs, with no crop, no metadata row and no
+        // guarantee of one sensor period. Every caller applies crops for exactly the ids in
+        // ITS request (captureStereoPair via applyPhysicalFullArrays, captureLensPair for
+        // its own two), which is the only place that knows them.
     }
 
     /**

@@ -314,7 +314,10 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         mManifest = null;
         Camera2Proxy proxy = mActivity.getmCamera2Proxy();
         if (proxy != null) {
-            manifest.noteStereoPairs(proxy.periodicStereoPairs());
+            // Periodic pairs from a video, plus the one-shot bursts of a stills run's anchor
+            // -- which is one burst on the metric pair and six on the all-lens set.
+            manifest.noteStereoPairs(proxy.periodicStereoPairs() + proxy.oneShotStereoBursts());
+            manifest.noteStereoMetaRows(proxy.stereoMetaRows());
         }
         manifest.noteStillsFired(mShots);
         noteLensSet(manifest);
@@ -465,6 +468,8 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             Log.i(TAG, "no stereo pair available on this device: run has no metric anchor");
             return;
         }
+        // This run's bursts count from zero; the receipt expects exactly what this run fired.
+        scm.resetOneShotBursts();
         int intervalS = androidx.preference.PreferenceManager
                 .getDefaultSharedPreferences(mActivity).getInt("stereo_interval_s", 0);
         StillCaptureManager.CaptureMode cm = mMode == Mode.PANO
@@ -571,8 +576,15 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // on 2026-09-20 with the camera dead from the second second; four of them fell out
         // here and the receipt said two were fired and one landed. Six asked, one landed is
         // the truth, and the receipt's shortfall is only honest if it counts the asking.
-        mShots += shots;
         Camera2Proxy proxy = mActivity.getmCamera2Proxy();
+        if (proxy != null && proxy.isStereoSequenceActive()) {
+            // Not asked of the camera, so not counted: a JPEG burst replaces the repeating
+            // request, and the pair being warmed under it would come back with a cold lens.
+            // The trigger will ask again at the next quiet moment.
+            Log.i(TAG, "quiet moment passed over: lens pairs in flight");
+            return;
+        }
+        mShots += shots;
         if (proxy == null || proxy.getStillCaptureManager() == null) {
             Log.w(TAG, "shot asked for with no camera to take it");
             return;
@@ -679,9 +691,14 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // scale-free; this is the stage that makes the capture metric.
         final boolean ownsWriter = owns;
         final boolean hasStereo = scm != null && scm.stereoSupported();
+        // With every lens configured the stereo stage is a sequence of six pairs at ~1.15 s
+        // each rather than one 2.2 s warm-up-and-fire, and the composite has to wait for it.
+        final boolean multiLens = hasStereo && scm.getStereoSurfaces().size() > 2;
         if (hasStereo) {
             mMain.postDelayed(() -> {
-                notifyState("OBJECT · stereo pair (metric scale)");
+                notifyState(multiLens ? "OBJECT · lens pairs (metric scale + baselines)"
+                        : "OBJECT · stereo pair (metric scale)");
+                scm.resetOneShotBursts();
                 proxy.captureStereoPair(dir, writer);
             }, 10000L);
         }
@@ -699,7 +716,12 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             }
             mCompositeActive = false;
             notifyState(hasStereo ? "OBJECT complete + stereo" : "OBJECT complete");
-            manifest.noteStereoPairs(hasStereo ? 1 : 0);
+            // What the stage actually issued: one burst on the metric pair, six on the
+            // all-lens set, and fewer than that if the sequence was cut short -- which the
+            // receipt should then disagree with.
+            manifest.noteStereoPairs(hasStereo
+                    ? Math.max(1, proxy.oneShotStereoBursts()) : 0);
+            manifest.noteStereoMetaRows(proxy.stereoMetaRows());
             manifest.noteStillsFired(fired[0]);
             if (mActivity.getmThermalLogger() != null) {
                 manifest.noteWorstThermalStatus(mActivity.getmThermalLogger().worstStatus());
@@ -709,7 +731,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             }
             mMain.postDelayed(() -> manifest.write(writer.accounting()), 1200L);
             Log.i(TAG, "object composite complete: " + dir);
-        }, hasStereo ? 15500L : 10500L);   // stereo adds a warm-up before its capture
+        }, multiLens ? 18500L : hasStereo ? 15500L : 10500L);   // stereo adds its warm-up(s)
     }
 
     /**

@@ -523,15 +523,26 @@ public final class TestPlan {
         // the next ran on the all-lens set and lost three of seven stills with no stereo at
         // all. Two runs, two different configurations, one cell id, and nothing in either
         // receipt said which had been in force.
-        out.add(new Step("L1", "L1 - every rear lens, one instant",
+        //
+        // NOT ONE INSTANT. Driven over adb on 2026-09-20 with the session rebuilt correctly,
+        // the four-lens warm-up killed the camera on its first frame: the S24 Ultra HAL logs
+        // "More than 2 real time pipeline request How to handle? numOfRealtimePipelines = 4"
+        // and raises ERROR_CAMERA_DEVICE. Two sensors per request is the ceiling. The
+        // streaming probe then showed that a session BOUND with all four serves any pair on
+        // request, ~0.5 s each -- so the all-lens shot is six pairs in sequence, the metric
+        // pair first, and against a static target that is every baseline.
+        out.add(new Step("L1", "L1 - every rear lens, in pairs",
                 "The cell sets the lens set and rebuilds the camera session itself; there is "
                         + "nothing to set by hand.\n\nPut the phone on something steady, "
                         + "pointed at a scene with detail at several distances, and do not "
-                        + "touch it.\n\nPASS = four stereo_ files sharing one burst id — uw, "
-                        + "main, phys6, phys7 — and lenses_in_widest_capture = 4 in the "
-                        + "manifest. Fewer means a lens was configured and did not deliver, "
-                        + "which is the finding. The manifest now records the lens set it was "
-                        + "shot with, so a short count cannot be mistaken for a pair run.",
+                        + "touch it. About two seconds in, six pairs fire one after another "
+                        + "over ~7 s: uw+main first, then uw+phys6, uw+phys7, main+phys6, "
+                        + "main+phys7, phys6+phys7. The stillness trigger is held off while "
+                        + "they run.\n\nPASS = six stereo_ bursts of two files each, "
+                        + "lenses_seen = 4 and stereo_pairs_complete = 6 in the manifest, "
+                        + "and agrees = true. Fewer lenses means one was configured and never "
+                        + "delivered; fewer bursts means the sequence was cut short. Either "
+                        + "is the finding, and the receipt names it.",
                 20, prefs("stereo_interval_s", 0, "lock_radiometry", true,
                         "blur_budget_manual", false, "lens_set", "all"),
                 Streams.STILLS, CaptureModeManager.Mode.WALK));
@@ -558,7 +569,10 @@ public final class TestPlan {
         // which is exactly the quantity being measured. Distortion correction off for the
         // same reason: the geometry has to be the lens's own.
         String baselineShot = "The cell sets the lens set and rebuilds the camera session "
-                + "itself; there is nothing to set by hand.\n\nPut the "
+                + "itself; there is nothing to set by hand. The lenses fire in PAIRS, one "
+                + "pair after another over ~7 s -- this phone runs two sensors per request -- "
+                + "which is why the target must not move: each pair is simultaneous, the "
+                + "pairs are not.\n\nPut the "
                 + "phone on a tripod or wedge it against something solid, pointed square at a "
                 + "FLAT textured target — a newspaper, a brick wall, a poster with fine "
                 + "detail. Square on, not angled. The target must fill the 5x view, so it "

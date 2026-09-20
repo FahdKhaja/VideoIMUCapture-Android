@@ -320,6 +320,14 @@ public class Camera2Proxy {
             Log.i(TAG, "stereo pair requested while periodic pairs run; leaving it to the interval");
             return;
         }
+        // More than the metric pair configured: pairs in sequence, never all at once. A
+        // warm-up that targets four physical streams is what killed the device on
+        // 2026-09-20 -- the HAL will run two sensors per request on this phone -- and the
+        // streaming probe showed every pair streams from a session bound with all four.
+        if (mStillCaptureManager.getStereoSurfaces().size() > 2) {
+            captureLensPairSequence(outputDir, writer);
+            return;
+        }
         try {
             CaptureRequest.Builder warm =
                     mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
@@ -358,6 +366,121 @@ public class Camera2Proxy {
             }, 2200L);
         } catch (CameraAccessException | IllegalStateException e) {
             Log.e(TAG, "stereo warm-up failed: " + e);
+        }
+    }
+
+    // ------------------------------------------------------------ pairs, in sequence
+
+    private volatile boolean mStereoSequenceActive = false;
+
+    /** Whether a pair sequence is between its first warm-up and its final preview restore. */
+    public boolean isStereoSequenceActive() {
+        return mStereoSequenceActive;
+    }
+
+    public int oneShotStereoBursts() {
+        return mStillCaptureManager == null ? 0 : mStillCaptureManager.oneShotStereoBursts();
+    }
+
+    public int stereoMetaRows() {
+        return mStillCaptureManager == null ? 0 : mStillCaptureManager.stereoMetaRows();
+    }
+
+    /** Warm-up per pair: the probe's first frame from a cold pair came at ~500 ms. */
+    private static final long PAIR_WARM_MS = 700L;
+    /** After the capture request, before the next pair's warm-up replaces the stream. */
+    private static final long PAIR_SETTLE_MS = 450L;
+
+    /**
+     * Every configured pair, one after another, each from its own warm repeating request.
+     *
+     * The single-pair path above warms both physical streams for 900 ms and fires once.
+     * This does the same thing per pair -- warm request carrying the preview plus exactly
+     * two physical surfaces, then a pair capture, then the next -- because two is what one
+     * request may run on this phone. Six pairs take about seven seconds; a static target
+     * does not mind, and every pair is simultaneous within itself, which is all a disparity
+     * needs. The ordinary preview is restored once, at the end.
+     *
+     * The stillness trigger is held off for the duration (see CaptureModeManager.captureNow):
+     * a JPEG burst replaces the repeating request, which would end the pair's warm-up under
+     * it and return ERROR_CAMERA_BUFFER for the cold lens.
+     */
+    private void captureLensPairSequence(File outputDir, RecordingWriter writer) {
+        final java.util.List<String[]> pairs = mStillCaptureManager.configuredLensPairs();
+        if (pairs.isEmpty()) {
+            Log.w(TAG, "no lens pairs to capture");
+            return;
+        }
+        mStereoSequenceActive = true;
+        Log.i(TAG, "lens pair sequence: " + pairs.size() + " pairs");
+        runPair(pairs, 0, outputDir, writer);
+    }
+
+    private void runPair(final java.util.List<String[]> pairs, final int i,
+                         final File outputDir, final RecordingWriter writer) {
+        if (mCameraDevice == null || mCaptureSession == null || mStillCaptureManager == null
+                || mPreviewRequestBuilder == null) {
+            Log.w(TAG, "pair sequence abandoned at " + i + ": session gone");
+            mStereoSequenceActive = false;
+            return;
+        }
+        final String[] pair = pairs.get(i);
+        try {
+            CaptureRequest.Builder warm =
+                    mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+            for (CaptureRequest.Key key : new CaptureRequest.Key[]{
+                    CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_AE_MODE,
+                    CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AF_MODE,
+                    CaptureRequest.CONTROL_AE_LOCK, CaptureRequest.CONTROL_AWB_LOCK,
+                    CaptureRequest.SENSOR_EXPOSURE_TIME, CaptureRequest.SENSOR_SENSITIVITY,
+                    CaptureRequest.FLASH_MODE, CaptureRequest.LENS_FOCUS_DISTANCE}) {
+                Object v = mPreviewRequestBuilder.get(key);
+                if (v != null) {
+                    warm.set(key, v);
+                }
+            }
+            warm.addTarget(mPreviewSurface);
+            for (String pid : pair) {
+                Surface s = mStillCaptureManager.lensSurface(pid);
+                if (s != null) {
+                    warm.addTarget(s);
+                }
+            }
+            mCaptureSession.setRepeatingRequest(
+                    warm.build(), mSessionCaptureCallback, mBackgroundHandler);
+            Log.d(TAG, "pair " + (i + 1) + "/" + pairs.size() + " warming: "
+                    + pair[0] + "+" + pair[1]);
+        } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
+            Log.e(TAG, "pair warm-up failed: " + e);
+            mStereoSequenceActive = false;
+            restorePreviewAfterPairs();
+            return;
+        }
+
+        mBackgroundHandler.postDelayed(() -> mStillCaptureManager.captureLensPair(
+                mCameraDevice, mCaptureSession, mPreviewRequestBuilder, outputDir, writer,
+                pair), PAIR_WARM_MS);
+        mBackgroundHandler.postDelayed(() -> {
+            if (i + 1 < pairs.size()) {
+                runPair(pairs, i + 1, outputDir, writer);
+            } else {
+                mStereoSequenceActive = false;
+                restorePreviewAfterPairs();
+                Log.i(TAG, "lens pair sequence complete: " + pairs.size() + " pairs");
+            }
+        }, PAIR_WARM_MS + PAIR_SETTLE_MS);
+    }
+
+    private void restorePreviewAfterPairs() {
+        if (mCaptureSession == null || mPreviewRequestBuilder == null) {
+            return;
+        }
+        try {
+            mCaptureSession.setRepeatingRequest(mPreviewRequestBuilder.build(),
+                    mSessionCaptureCallback, mBackgroundHandler);
+            Log.d(TAG, "pair sequence ended, preview restored");
+        } catch (CameraAccessException | IllegalStateException e) {
+            Log.w(TAG, "could not restore preview after pairs: " + e);
         }
     }
 

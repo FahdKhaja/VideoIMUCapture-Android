@@ -228,10 +228,64 @@ public class SessionManifestTest {
         JSONObject root = read(dir);
         assertEquals("all", root.getJSONObject("expected").getString("lens_set"));
         assertEquals(4, root.getJSONObject("expected").getInt("lenses_configured"));
-        assertEquals(2, root.getJSONObject("measured").getInt("lenses_in_widest_capture"));
+        assertEquals(2, root.getJSONObject("measured").getInt("lenses_seen"));
         assertFalse("half the lenses are missing", root.getBoolean("agrees"));
         assertTrue(root.getString("summary"),
                 root.getString("summary").contains("4 lenses configured, 2 delivered"));
+    }
+
+    /**
+     * The all-lens shot as this phone can actually take it: six pairs in sequence.
+     *
+     * One request runs two sensors, so no burst ever holds four files -- the widest capture
+     * is two, and judging by it would fail every all-lens session that worked. What "every
+     * lens delivered" means here is every lens appearing in SOME burst.
+     */
+    @Test
+    public void aPairSequenceCoveringEveryLensAgrees() throws Exception {
+        File dir = mFolder.newFolder("walk_pairs_in_sequence");
+        String[][] pairs = {{"uw", "main"}, {"uw", "phys6"}, {"uw", "phys7"},
+                {"main", "phys6"}, {"main", "phys7"}, {"phys6", "phys7"}};
+        for (int i = 0; i < pairs.length; i++) {
+            touch(dir, "stereo_" + (1000 + i) + "_" + pairs[i][0] + ".jpg", 16);
+            touch(dir, "stereo_" + (1000 + i) + "_" + pairs[i][1] + ".jpg", 16);
+        }
+        SessionManifest m = manifest(dir, "WALK");
+        m.noteStillsRequested();
+        m.noteLensSet("all", 4);
+        m.noteStereoPairs(6);
+        m.write(null);
+
+        JSONObject root = read(dir);
+        JSONObject measured = root.getJSONObject("measured");
+        assertEquals(6, measured.getInt("stereo_bursts_seen"));
+        assertEquals(6, measured.getInt("stereo_pairs_complete"));
+        assertEquals("no burst is wider than a pair", 2,
+                measured.getInt("lenses_in_widest_capture"));
+        assertEquals("but every lens appeared", 4, measured.getInt("lenses_seen"));
+        assertTrue(root.getString("summary"), root.getBoolean("agrees"));
+        assertFalse(root.getString("summary").contains("configured"));
+    }
+
+    @Test
+    public void aPairSequenceCutShortDisagrees() throws Exception {
+        // Four of six pairs landed, and the fourth lens never appeared: both are findings.
+        File dir = mFolder.newFolder("walk_pairs_cut_short");
+        String[][] pairs = {{"uw", "main"}, {"uw", "phys6"}, {"main", "phys6"}};
+        for (int i = 0; i < pairs.length; i++) {
+            touch(dir, "stereo_" + (2000 + i) + "_" + pairs[i][0] + ".jpg", 16);
+            touch(dir, "stereo_" + (2000 + i) + "_" + pairs[i][1] + ".jpg", 16);
+        }
+        SessionManifest m = manifest(dir, "WALK");
+        m.noteStillsRequested();
+        m.noteLensSet("all", 4);
+        m.noteStereoPairs(6);
+        m.write(null);
+
+        JSONObject root = read(dir);
+        assertEquals(3, root.getJSONObject("measured").getInt("lenses_seen"));
+        assertFalse(root.getBoolean("agrees"));
+        assertTrue(root.getString("summary").contains("4 lenses configured, 3 delivered"));
     }
 
     @Test
@@ -345,6 +399,55 @@ public class SessionManifestTest {
         m.noteStillsFired(1);
         m.write(null);
         assertFalse(read(dir).has("camera_error"));
+    }
+
+    /**
+     * Pair-shaped files with no metadata behind them.
+     *
+     * The first L1 pair sequence on 2026-09-20: six bursts on the card, twelve files, every
+     * lens present -- and five of the six bursts were warm-up frames that armed readers kept
+     * after the capture request threw. Only the first burst's callback ran. Counting files,
+     * the receipt said "6 stereo pairs (metric scale)"; counting rows, it is one pair and ten
+     * frames that happened to be passing.
+     */
+    @Test
+    public void stereoFilesWithoutMetadataRowsAreImpostorsAndDisagree() throws Exception {
+        File dir = mFolder.newFolder("walk_2026_09_20_18_53_06");
+        String[][] pairs = {{"uw", "main"}, {"uw", "phys6"}, {"uw", "phys7"},
+                {"main", "phys6"}, {"main", "phys7"}, {"phys6", "phys7"}};
+        for (int i = 0; i < pairs.length; i++) {
+            touch(dir, "stereo_" + (3000 + i) + "_" + pairs[i][0] + ".jpg", 16);
+            touch(dir, "stereo_" + (3000 + i) + "_" + pairs[i][1] + ".jpg", 16);
+        }
+        SessionManifest m = manifest(dir, "WALK");
+        m.noteStillsRequested();
+        m.noteLensSet("all", 4);
+        m.noteStereoPairs(6);
+        m.noteStereoMetaRows(2);         // one callback ran: two rows for twelve files
+        m.write(null);
+
+        JSONObject root = read(dir);
+        assertEquals(12, root.getJSONObject("measured").getInt("stereo_halves"));
+        assertEquals(2, root.getJSONObject("expected").getInt("stereo_meta_rows"));
+        assertFalse("ten files have no capture behind them", root.getBoolean("agrees"));
+        assertTrue(root.getString("summary"),
+                root.getString("summary").contains("10 STEREO FILES HAVE NO METADATA"));
+    }
+
+    @Test
+    public void rowsMatchingFilesIsACleanSequence() throws Exception {
+        File dir = mFolder.newFolder("walk_rows_match");
+        touch(dir, "stereo_1_uw.jpg", 16);
+        touch(dir, "stereo_1_main.jpg", 16);
+        SessionManifest m = manifest(dir, "WALK");
+        m.noteStillsRequested();
+        m.noteStereoPairs(1);
+        m.noteStereoMetaRows(2);
+        m.write(null);
+
+        JSONObject root = read(dir);
+        assertTrue(root.getBoolean("agrees"));
+        assertFalse(root.getString("summary").contains("NO METADATA"));
     }
 
     @Test

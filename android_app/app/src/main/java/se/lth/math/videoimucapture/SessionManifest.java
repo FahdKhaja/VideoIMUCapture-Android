@@ -66,6 +66,7 @@ public final class SessionManifest {
     private int mLensesConfigured = -1;
     private int mCameraError = -1;
     private long mCameraErrorAtMs = -1;
+    private int mStereoMetaRows = -1;
 
     public SessionManifest(android.content.Context context, File dir, String mode,
                            String testTag) {
@@ -142,6 +143,20 @@ public final class SessionManifest {
     public void noteLensSet(String set, int configured) {
         mLensSet = set;
         mLensesConfigured = configured;
+    }
+
+    /**
+     * How many stereo metadata rows the capture path actually wrote.
+     *
+     * A stereo file is written by the image reader; its row is written by the capture
+     * callback. When the capture request fails after the readers are armed, the reader still
+     * keeps the next warm-up frame and the callback never runs -- a file with no row. The
+     * first L1 pair sequence on 2026-09-20 produced five such bursts out of six, and a
+     * receipt that counted files called it "6 stereo pairs (metric scale)". Rows against
+     * files is what tells a capture from a frame that happened to be passing.
+     */
+    public void noteStereoMetaRows(int rows) {
+        mStereoMetaRows = rows;
     }
 
     /** Free bytes when the session opened, so a short session can explain itself. */
@@ -236,6 +251,9 @@ public final class SessionManifest {
             if (mLensSet != null) {
                 expected.put("lens_set", mLensSet);
                 expected.put("lenses_configured", mLensesConfigured);
+            }
+            if (mStereoMetaRows >= 0) {
+                expected.put("stereo_meta_rows", mStereoMetaRows);
             }
             root.put("expected", expected);
 
@@ -341,6 +359,11 @@ public final class SessionManifest {
         int singleDng = 0;
         int stereoHalves = 0;
         Map<String, java.util.Set<String>> tagsPerBurst = new HashMap<>();
+        // Every distinct lens that delivered ANYWHERE in the session. On this phone a
+        // simultaneous capture is a pair -- the HAL will not run more than two sensors on
+        // one request -- so an all-lens session is a SEQUENCE of pairs, and the question
+        // "did every lens deliver" is answered across bursts, not within one.
+        java.util.Set<String> lensesSeen = new java.util.LinkedHashSet<>();
 
         File[] files = mDir.listFiles();
         if (files != null) {
@@ -371,6 +394,7 @@ public final class SessionManifest {
                             tagsPerBurst.put(burst, tags);
                         }
                         tags.add(tag);
+                        lensesSeen.add(tag);
                     }
                 }
             }
@@ -393,6 +417,7 @@ public final class SessionManifest {
         // The most lenses any one simultaneous capture managed. 2 is the metric pair; more
         // means the all-lens shot fired and says how many of them actually landed.
         m.put("lenses_in_widest_capture", widestBurst);
+        m.put("lenses_seen", lensesSeen.size());
         return m;
     }
 
@@ -430,8 +455,14 @@ public final class SessionManifest {
                 return false;
             }
         }
+        // Across the session, not within one burst: on this phone a request can run two
+        // sensors, so every lens delivering means every lens appearing in SOME pair.
         if (mLensesConfigured > 0 && measured.optInt("stereo_bursts_seen", 0) > 0
-                && measured.optInt("lenses_in_widest_capture", 0) < mLensesConfigured) {
+                && measured.optInt("lenses_seen", 0) < mLensesConfigured) {
+            return false;
+        }
+        // A stereo file with no metadata row is a warm-up frame, not a capture.
+        if (mStereoMetaRows >= 0 && measured.optInt("stereo_halves", 0) > mStereoMetaRows) {
             return false;
         }
         return mStereoPairsArmed <= measured.optInt("stereo_pairs_complete", 0);
@@ -474,10 +505,17 @@ public final class SessionManifest {
                     .append(" STILLS NEVER REACHED THE CARD");
         }
         if (mLensesConfigured > 0 && measured.optInt("stereo_bursts_seen", 0) > 0) {
-            int got = measured.optInt("lenses_in_widest_capture", 0);
+            int got = measured.optInt("lenses_seen", 0);
             if (got < mLensesConfigured) {
                 sb.append(" — ").append(mLensesConfigured).append(" lenses configured, ")
                         .append(got).append(" delivered");
+            }
+        }
+        if (mStereoMetaRows >= 0) {
+            int impostors = measured.optInt("stereo_halves", 0) - mStereoMetaRows;
+            if (impostors > 0) {
+                sb.append(" — ").append(impostors)
+                        .append(" STEREO FILES HAVE NO METADATA (warm-up frames, not captures)");
             }
         }
         if (measured.optLong("video_unplayable_bytes", 0) > 0) {
