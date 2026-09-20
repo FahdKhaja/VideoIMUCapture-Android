@@ -19,8 +19,8 @@ android {
         applicationId "se.lth.math.videoimucapture"
         minSdkVersion 24
         targetSdkVersion 34
-        versionCode 16
-        versionName "0.16"
+        versionCode 17
+        versionName "0.17"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
