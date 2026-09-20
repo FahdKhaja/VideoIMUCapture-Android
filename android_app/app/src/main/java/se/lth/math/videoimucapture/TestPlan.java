@@ -288,6 +288,29 @@ public final class TestPlan {
                 20, prefs("raw_pixels", true, "lock_radiometry", true,
                         "ois", false, "ois_data", false)));
 
+        // H1/H2 (ReconStab #61): does the focal length hold still while autofocus is running?
+        //
+        // Every walk this project has shot was shot with AF live, and a solve that freezes
+        // intrinsics is asserting a constant nobody has checked. The check is free and comes
+        // FIRST: plot lens_intrinsic_calibration[0] across H1 and count frames whose lens_state
+        // says the lens was moving when the shutter opened. H2 is what the answer looks like if
+        // the plot is flat -- a lens parked at hyperfocal and never touched again -- so the two
+        // together say both how much it moves and whether parking it fixes anything.
+        String focusShot = "Walk the same short route twice, phone UPRIGHT, past things at "
+                + "DIFFERENT distances -- something close on one side and something far on the "
+                + "other. A corridor with a doorway works. The point is to give autofocus "
+                + "something to hunt for in H1.";
+        out.add(new Step("H1", "H1 - autofocus live (the archive)",
+                focusShot + "\n\nAF running, as every walk so far.",
+                30, prefs("focus_mode", "TOUCH_AUTO", "focus_hyperfocal", false,
+                        "lock_radiometry", true, "ois", false, "ois_data", false)));
+        out.add(new Step("H2", "H2 - parked at hyperfocal",
+                focusShot + "\n\nManual focus at the computed hyperfocal distance; the voice "
+                        + "coil should not move once. Against H1 the focal should be a flat "
+                        + "line and no frame should report a moving lens.",
+                30, prefs("focus_mode", "MANUAL", "focus_hyperfocal", true,
+                        "lock_radiometry", true, "ois", false, "ois_data", false)));
+
         // D1/D2 (ReconStab #58): does the HAL hand back frames it has already un-warped? The
         // coefficients recorded in every session describe the RAW sensor, so if correction ran,
         // a solve using them corrects twice -- and both that and the opposite error look like a

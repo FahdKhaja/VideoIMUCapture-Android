@@ -485,6 +485,9 @@ class CameraSettingFocusMode extends CameraSetting {
     private Float mMinFocusDistance;
     private final String mModePrefKey = "focus_mode";
     private final String mDistancePrefKey = "focus_distance";
+    private final String mHyperfocalPrefKey = "focus_hyperfocal";
+    /** Computed once from the lens; null when the device does not publish enough to compute. */
+    private Float mHyperfocalDiopters;
 
     public CameraSettingFocusMode(CameraCharacteristics cameraCharacteristics) {
         //Check available options
@@ -508,6 +511,17 @@ class CameraSettingFocusMode extends CameraSetting {
         //Check valid range
         mMinFocusDistance = cameraCharacteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
 
+        mHyperfocalDiopters = computeHyperfocalDiopters(cameraCharacteristics);
+        if (mHyperfocalDiopters != null && mMinFocusDistance != null) {
+            // The seekbar's max is the CLOSEST the lens can focus, in diopters. Hyperfocal is
+            // always further away than that, so it should sit comfortably inside the range --
+            // but clamp rather than trust, because a request outside the range is undefined.
+            mHyperfocalDiopters = Math.max(0f, Math.min(mHyperfocalDiopters, mMinFocusDistance));
+            Log.i("CameraSetting", String.format(java.util.Locale.US,
+                    "hyperfocal %.3f diopters (%.2f m); lens closest %.3f diopters",
+                    mHyperfocalDiopters, 1.0 / mHyperfocalDiopters, mMinFocusDistance));
+        }
+
         //Set default
         if (mRestoreDefault || !mSharedPreferences.contains(mModePrefKey)) {
             mSharedPreferences.edit().putString(mModePrefKey, DEFAULT_FOCUS_MODE.toString()).apply();
@@ -526,7 +540,56 @@ class CameraSettingFocusMode extends CameraSetting {
     }
 
     private float getFocusDistance() {
+        if (mHyperfocalDiopters != null
+                && mSharedPreferences.getBoolean(mHyperfocalPrefKey, false)) {
+            return mHyperfocalDiopters;
+        }
         return mSharedPreferences.getFloat(mDistancePrefKey, DEFAULT_FOCUS_DISTANCE);
+    }
+
+    /**
+     * The hyperfocal distance in DIOPTERS, which is what LENS_FOCUS_DISTANCE takes.
+     *
+     * ReconStab #61. MANUAL focus has existed here all along, but the operator had to supply
+     * a diopter, which meant the one focus setting worth using for a walk -- focus once at
+     * hyperfocal, never move the voice coil again -- was a number nobody could produce in the
+     * field. Continuous AF hunts, a moving voice coil breathes the focal length by a few
+     * percent across a session, and a solve run with freeze_intrinsics is then asserting a
+     * constant that was not constant.
+     *
+     * H = f^2 / (N * c) + f, everything in millimetres: focal length, f-number, and the
+     * circle of confusion taken as the sensor diagonal over 1500 -- the standard convention,
+     * and conservative for a matcher, which cares about a sharp gradient rather than about
+     * what looks acceptable in a print.
+     *
+     * Note what this does NOT settle. Step 1 of the issue is free and has not been run: plot
+     * lens_intrinsic_calibration[0] across an AF-on walk already on disk and count the frames
+     * whose lens_state says the lens was still moving when the shutter opened. If the focal is
+     * flat, none of this is needed. This computes the number so that the experiment can be
+     * shot when the plot asks for it, and changes nothing by default.
+     */
+    private static Float computeHyperfocalDiopters(CameraCharacteristics ch) {
+        float[] focals = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+        float[] apertures = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES);
+        android.util.SizeF sensor = ch.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
+        if (focals == null || focals.length == 0 || apertures == null || apertures.length == 0
+                || sensor == null) {
+            return null;
+        }
+        float f = focals[0];
+        float n = apertures[0];
+        double diagonalMm = Math.sqrt(sensor.getWidth() * sensor.getWidth()
+                + sensor.getHeight() * sensor.getHeight());
+        double c = diagonalMm / 1500.0;
+        if (f <= 0 || n <= 0 || c <= 0) {
+            return null;
+        }
+        double hMm = (f * f) / (n * c) + f;
+        if (hMm <= 0) {
+            return null;
+        }
+        // Diopters are 1/metre, and H is in millimetres.
+        return (float) (1000.0 / hMm);
     }
 
     public void updatePreferenceScreen(PreferenceScreen prefScreen) {
