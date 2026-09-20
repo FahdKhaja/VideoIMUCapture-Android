@@ -344,6 +344,9 @@ public class Camera2Proxy {
                     warm.set(key, v);
                 }
             }
+            // Widest zoom in the warm-up, for the same reason as the pair sequence: the
+            // ultrawide's stream is only the ultrawide's view once the HAL is at 0.6.
+            mStillCaptureManager.applyFullFieldOfView(warm);
             warm.addTarget(mPreviewSurface);
             for (Surface s : mStillCaptureManager.getStereoSurfaces().values()) {
                 warm.addTarget(s);
@@ -439,6 +442,10 @@ public class Camera2Proxy {
                     warm.set(key, v);
                 }
             }
+            // Widest zoom IN THE WARM-UP, so the HAL has already switched master lens by the
+            // time the pair fires. This is what makes the ultrawide half a wide-angle frame
+            // rather than a crop of the main camera's view (see applyFullFieldOfView).
+            mStillCaptureManager.applyFullFieldOfView(warm);
             warm.addTarget(mPreviewSurface);
             for (String pid : pair) {
                 Surface s = mStillCaptureManager.lensSurface(pid);
@@ -542,6 +549,13 @@ public class Camera2Proxy {
                 b.addTarget(s);
             }
             mStillCaptureManager.applyPhysicalFullArrays(b);
+            // NO widest-zoom here, deliberately. This request also drives the VIDEO for the
+            // whole clip, and at 0.6 the logical camera switches master to the ultrawide --
+            // every walk would be shot on the wide lens. So periodic pairs inside a video keep
+            // the ultrawide half cropped toward the main camera's view (a session-dependent
+            // 1.4-1.6x; see applyFullFieldOfView), and their depth needs the effective focal
+            // measured, not the census value. Changing the clip's lens is an operator
+            // decision, not a side effect of asking for a metric anchor.
             mPreviewRequestBuilder = b;
             mCaptureSession.setRepeatingRequest(
                     mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);

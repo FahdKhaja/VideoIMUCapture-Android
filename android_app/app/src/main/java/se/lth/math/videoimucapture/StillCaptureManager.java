@@ -1515,7 +1515,20 @@ public class StillCaptureManager {
      * took whatever this method set. Setting the preference alone would have produced pairs
      * that looked corrected on screen and were not.
      */
-    private void applyFullFieldOfView(CaptureRequest.Builder b) {
+    /**
+     * Put the logical camera at its widest zoom, which is what makes the ultrawide's physical
+     * stream carry the ultrawide's field of view.
+     *
+     * Measured 2026-09-20 with the zoom probe: at CONTROL_ZOOM_RATIO 1.0 the wide sensor's
+     * stream is cropped toward the main camera's framing (1.39x in the probe's session, 1.62x
+     * in the app's -- it varies with the session), and every crop_region still reports the
+     * full array. At 0.6 the same stream measures 1.658x wider than the main camera against a
+     * census prediction of 1.636, and the main camera's own stream is unchanged (1.000). The
+     * zoom has to be in the REPEATING request the pair is warmed on, not only in the one-shot:
+     * a one-shot at 0.6 dropped into a stream at 1.0 came back reporting 1.0 in five of six
+     * bursts, because the HAL will not switch master lens for a single frame.
+     */
+    public void applyFullFieldOfView(CaptureRequest.Builder b) {
         if (Build.VERSION.SDK_INT >= 30) {
             Range<Float> zoom =
                     mCharacteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
