@@ -270,6 +270,13 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         }
     }
 
+    /** The same, for heat. */
+    public void noteStoppedForHeat() {
+        if (mManifest != null) {
+            mManifest.noteStoppedForHeat();
+        }
+    }
+
     private void sealSession() {
         final SessionManifest manifest = mManifest;
         if (manifest == null) {
@@ -286,6 +293,9 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // available: the trailer is written during release(), on the encoder thread, after the
         // record button comes up. Reading it before then would report a file that is still
         // being closed.
+        if (mActivity.getmThermalLogger() != null) {
+            manifest.noteWorstThermalStatus(mActivity.getmThermalLogger().worstStatus());
+        }
         mMain.postDelayed(() -> {
             manifest.noteVideoFileComplete(TextureMovieEncoder.lastFileComplete());
             manifest.write(writer == null ? null : writer.accounting());

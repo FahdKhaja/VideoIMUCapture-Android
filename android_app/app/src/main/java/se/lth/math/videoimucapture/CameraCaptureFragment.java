@@ -678,6 +678,13 @@ public class CameraCaptureFragment extends Fragment
             if (!Float.isNaN(c)) {
                 heat = String.format(Locale.getDefault(), "%.0f°C|", c);
             }
+            // A temperature is a number the operator has to interpret; THROTTLING is a fact
+            // they can act on. The status is what the OS itself is acting on, and until now
+            // it went into the file and nowhere else -- so a walk degrading under heat looked
+            // exactly like a walk that was going fine.
+            if (act.getmThermalLogger().isThrottling()) {
+                heat = "THROTTLING|" + heat;
+            }
         }
         // The measured smear, always, when the budget is running. The alarm is the exception;
         // the number is the information, and it is what lets the operator learn where their own

@@ -379,6 +379,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
         mCaptureModeManager = new CaptureModeManager(this);
         mStorageGuard = new StorageGuard(new File(getResultRoot()));
         mStorageGuard.setListener(this::onStorageCritical);
+        mThermalLogger.setListener(this::onThermalCritical);
 
         if (savedInstanceState == null) {
             ToolBarFragment fragment = new ToolBarFragment();
@@ -598,6 +599,43 @@ public class CameraCaptureActivity extends AppCompatActivity {
      * Both controls are stopped, in that order, because either or both may be running and
      * stopping only one would leave the other writing into the reserve this is protecting.
      */
+    /**
+     * The phone is at THERMAL_STATUS_CRITICAL. End the capture for the same reason the
+     * storage guard does: the platform is entitled to take the camera at this point, and a
+     * session taken from is one that never got its trailer, its closing RAW or its receipt.
+     *
+     * The session is NOT deleted and nothing is undone -- what was captured before the heat
+     * is as good as it ever was, and a hot phone does not retroactively spoil it.
+     */
+    private void onThermalCritical(int status, float batteryC) {
+        Log.e(TAG, "thermal critical (status " + status + ", " + batteryC + " C): stopping");
+        if (mCaptureModeManager != null) {
+            mCaptureModeManager.noteStoppedForHeat();
+        }
+        stopEverything();
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Too hot — capture stopped")
+                .setMessage(String.format(java.util.Locale.US,
+                        "The phone reached thermal status %d at %.1f C, where the system can "
+                                + "take the camera away mid-clip. The session was ended while "
+                                + "it could still be closed properly, and everything recorded "
+                                + "up to that point is intact.\n\nLet it cool before the next "
+                                + "run.", status, batteryC))
+                .setPositiveButton("OK", null)
+                .show();
+    }
+
+    /** Stop whichever controls are live, video first. Used by both self-stopping guards. */
+    private void stopEverything() {
+        CameraCaptureFragment frag = getmCameraCaptureFragment();
+        if (frag != null && frag.isRecording()) {
+            frag.clickToggleRecording(null);
+        }
+        if (mCaptureModeManager != null && mCaptureModeManager.isRunning()) {
+            mCaptureModeManager.onCaptureButton();
+        }
+    }
+
     private void onStorageCritical(StorageGuard.Status status) {
         Log.e(TAG, "storage critical with " + StorageGuard.describe(status.freeBytes)
                 + " free: ending the capture");
@@ -607,13 +645,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
         if (mCaptureModeManager != null) {
             mCaptureModeManager.noteStoppedForSpace();
         }
-        CameraCaptureFragment frag = getmCameraCaptureFragment();
-        if (frag != null && frag.isRecording()) {
-            frag.clickToggleRecording(null);
-        }
-        if (mCaptureModeManager != null && mCaptureModeManager.isRunning()) {
-            mCaptureModeManager.onCaptureButton();
-        }
+        stopEverything();
         new androidx.appcompat.app.AlertDialog.Builder(this)
                 .setTitle("Storage full — capture stopped")
                 .setMessage("Only " + StorageGuard.describe(status.freeBytes) + " left, so the "

@@ -40,9 +40,17 @@ public class ThermalLogger {
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private RecordingWriter mWriter = null;
 
+    // PowerManager.THERMAL_STATUS_*, named because the numbers on their own say nothing about
+    // which of them is worth acting on.
+    public static final int STATUS_MODERATE = 2;   // the sensor's output starts to change
+    public static final int STATUS_SEVERE = 3;     // visible degradation; warn, do not stop
+    public static final int STATUS_CRITICAL = 4;   // the platform may take the camera
+
     private volatile float mLastBatteryC = Float.NaN;
     private volatile int mLastStatus = -1;
     private volatile float mLastHeadroom = Float.NaN;
+    private volatile int mWorstStatus = -1;
+    private boolean mCriticalFired = false;
 
     private final Runnable mTick = new Runnable() {
         @Override
@@ -61,6 +69,10 @@ public class ThermalLogger {
 
     public void startRecording(RecordingWriter writer) {
         mWriter = writer;
+        // Each session reports its OWN worst heat. Carrying the last one's over would make
+        // every clip after a hot one look throttled, which is the kind of stale flag that
+        // teaches an operator to ignore the flag.
+        resetWorstStatus();
         mHandler.removeCallbacks(mTick);
         mHandler.post(mTick);
     }
@@ -116,9 +128,59 @@ public class ThermalLogger {
             b.setThermalHeadroom(mLastHeadroom);
         }
         w.queueData(b.build());
-        if (mLastStatus >= 3) {
+        if (mLastStatus > mWorstStatus) {
+            mWorstStatus = mLastStatus;
+        }
+        if (mLastStatus >= STATUS_SEVERE) {
             Log.w(TAG, "thermal status " + mLastStatus + " at " + mLastBatteryC + " C");
         }
+        // THE ONE PLACE THIS CLASS ACTS RATHER THAN WATCHES. Everything above is recording,
+        // and recording is what this class was built for -- but at CRITICAL the platform is
+        // already throttling hard and is entitled to take the camera away, and a session that
+        // is taken from is a session that never got its trailer, its closing RAW or its
+        // receipt. Ending it here is the same argument as the storage reserve: stop while
+        // stopping still works.
+        //
+        // Not at SEVERE. Severe is degradation -- lower clocks, a hotter sensor, frames the
+        // solve may or may not like -- and ending a walk over degradation the operator has
+        // not seen would cost more captures than it saved. Severe is a warning on the screen.
+        if (mLastStatus >= STATUS_CRITICAL && !mCriticalFired) {
+            mCriticalFired = true;
+            Log.e(TAG, "thermal status " + mLastStatus + " (critical): ending the capture");
+            Listener l = mListener;
+            if (l != null) {
+                mHandler.post(() -> l.onThermalCritical(mLastStatus, mLastBatteryC));
+            }
+        }
+    }
+
+    /** Told, on the main thread, when the phone is too hot to keep capturing safely. */
+    public interface Listener {
+        void onThermalCritical(int status, float batteryC);
+    }
+
+    private volatile Listener mListener;
+
+    public void setListener(Listener l) {
+        mListener = l;
+    }
+
+    /**
+     * The worst thermal status seen since the last reset, so a session that degraded can say
+     * so in its own receipt instead of leaving it to be inferred from the stream afterwards.
+     */
+    public int worstStatus() {
+        return mWorstStatus;
+    }
+
+    public void resetWorstStatus() {
+        mWorstStatus = -1;
+        mCriticalFired = false;
+    }
+
+    /** True while the phone is throttling enough to change what the sensor delivers. */
+    public boolean isThrottling() {
+        return mLastStatus >= STATUS_MODERATE;
     }
 
     /** The most recent battery temperature, or NaN before the first sample. */

@@ -56,6 +56,8 @@ public final class SessionManifest {
     private long mFreeAtStartBytes = -1;
     private boolean mStoppedForSpace = false;
     private Boolean mVideoFileComplete = null;
+    private boolean mStoppedForHeat = false;
+    private int mWorstThermalStatus = -1;
 
     public SessionManifest(android.content.Context context, File dir, String mode,
                            String testTag) {
@@ -128,6 +130,15 @@ public final class SessionManifest {
         mStoppedForSpace = true;
     }
 
+    /** The same, for heat, and the worst thermal status the session reached. */
+    public void noteStoppedForHeat() {
+        mStoppedForHeat = true;
+    }
+
+    public void noteWorstThermalStatus(int status) {
+        mWorstThermalStatus = status;
+    }
+
     /**
      * Measure the directory and write the manifest. Never throws: a session that has just
      * been shot must not be lost because its receipt could not be written.
@@ -174,6 +185,15 @@ public final class SessionManifest {
             storage.put("free_at_end_bytes", StorageGuard.freeBytes(mDir));
             storage.put("stopped_for_space", mStoppedForSpace);
             root.put("storage", storage);
+
+            // Heat, for the same reason as storage: a clip that degraded under throttling and
+            // one shot on a cool phone are not the same measurement, and the thermal stream in
+            // the pb3 answers that only for someone who goes looking.
+            JSONObject thermal = new JSONObject();
+            thermal.put("worst_status", mWorstThermalStatus);
+            thermal.put("stopped_for_heat", mStoppedForHeat);
+            thermal.put("throttled", mWorstThermalStatus >= ThermalLogger.STATUS_MODERATE);
+            root.put("thermal", thermal);
 
             root.put("agrees", agrees(measured));
             root.put("summary", summary(measured, frames));
@@ -305,6 +325,11 @@ public final class SessionManifest {
         }
         if (mStoppedForSpace) {
             sb.append(" — ENDED EARLY: the card ran out");
+        }
+        if (mStoppedForHeat) {
+            sb.append(" — ENDED EARLY: the phone was too hot");
+        } else if (mWorstThermalStatus >= ThermalLogger.STATUS_SEVERE) {
+            sb.append(" — throttled (thermal ").append(mWorstThermalStatus).append(')');
         }
         return sb.toString();
     }
