@@ -9,4 +9,6 @@
     <color name="captureButtonActiveBkg">#EF6F6C</color>
     <color name="torchOffBkg">#9E9E9E</color>
     <color name="torchOnBkg">#FFE066</color>
+    <!-- A session whose receipt says it did not get what it asked for. -->
+    <color name="rollWarning">#E05252</color>
 </resources>

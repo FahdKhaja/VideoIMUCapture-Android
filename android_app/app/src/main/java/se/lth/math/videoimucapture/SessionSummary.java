@@ -43,10 +43,20 @@ public final class SessionSummary {
     public final List<File> stills;    // every jpg/dng, sorted by name
     public final int stereoPairs;      // stereo_*_uw.jpg with a matching _main.jpg
     public final int dngs;
+    /**
+     * The one line the files themselves cannot produce: what the capture path SET OUT to do.
+     *
+     * Everything else here is measured from the directory, which is right, but it means the
+     * roll can see that a session has no video and cannot see that the operator pressed
+     * record and got nothing. That distinction is the whole of the 2026-09-14 failure, and it
+     * lives only in session.json. Null for every session shot before the receipt existed,
+     * which is most of the archive.
+     */
+    public final String receiptWarning;
 
     private SessionSummary(File dir, String mode, String kind, String when, long bytes,
                            File video, File meta, long videoMs, List<File> stills,
-                           int stereoPairs, int dngs) {
+                           int stereoPairs, int dngs, String receiptWarning) {
         this.dir = dir;
         this.name = dir.getName();
         this.mode = mode;
@@ -59,6 +69,7 @@ public final class SessionSummary {
         this.stills = stills;
         this.stereoPairs = stereoPairs;
         this.dngs = dngs;
+        this.receiptWarning = receiptWarning;
     }
 
     /** The directory listing and the mp4 header. Milliseconds, not seconds. */
@@ -118,7 +129,63 @@ public final class SessionSummary {
         String[] parsed = parseName(dir.getName());
         String kind = measuredKind(parsed[1], parsed[0], parsed[3], video, stills.size());
         return new SessionSummary(dir, parsed[0], kind, parsed[2], bytes, video, meta,
-                videoMs, stills, pairs, dngs);
+                videoMs, stills, pairs, dngs, readReceiptWarning(dir));
+    }
+
+    /**
+     * Read session.json for the one thing a directory listing cannot say: whether what the
+     * capture path asked for is what arrived.
+     *
+     * Deliberately forgiving. A receipt that is missing, truncated or from a future version
+     * of the app must leave the row looking exactly as it would have anyway -- the roll is
+     * the field-side check, and a parser that throws on a session shot last month would take
+     * the whole list down with it.
+     *
+     * @return a short warning to show, or null when there is nothing to say.
+     */
+    private static String readReceiptWarning(File dir) {
+        File receipt = new File(dir, SessionManifest.FILENAME);
+        if (!receipt.isFile() || receipt.length() == 0 || receipt.length() > 256 * 1024) {
+            return null;
+        }
+        try {
+            byte[] raw = new byte[(int) receipt.length()];
+            try (FileInputStream in = new FileInputStream(receipt)) {
+                int read = 0;
+                while (read < raw.length) {
+                    int n = in.read(raw, read, raw.length - read);
+                    if (n < 0) {
+                        break;
+                    }
+                    read += n;
+                }
+            }
+            org.json.JSONObject root =
+                    new org.json.JSONObject(new String(raw, java.nio.charset.StandardCharsets.UTF_8));
+            if (root.optBoolean("agrees", true)) {
+                return null;
+            }
+            org.json.JSONObject expected = root.optJSONObject("expected");
+            org.json.JSONObject measured = root.optJSONObject("measured");
+            if (expected == null || measured == null) {
+                return "the session did not get what it asked for";
+            }
+            if (expected.optBoolean("video") && !measured.optBoolean("video")) {
+                return "RECORD WAS PRESSED AND NO VIDEO ARRIVED";
+            }
+            if (expected.optBoolean("stills") && measured.optInt("stills_jpg") == 0) {
+                return "a stills run fired nothing";
+            }
+            int armed = expected.optInt("stereo_pairs_armed");
+            int complete = measured.optInt("stereo_pairs_complete");
+            if (armed > complete) {
+                return "only " + complete + " of " + armed + " stereo pairs completed";
+            }
+            return "the session did not get what it asked for";
+        } catch (org.json.JSONException | IOException | RuntimeException e) {
+            Log.w(TAG, "unreadable receipt in " + dir.getName() + ": " + e);
+            return null;
+        }
     }
 
     /**

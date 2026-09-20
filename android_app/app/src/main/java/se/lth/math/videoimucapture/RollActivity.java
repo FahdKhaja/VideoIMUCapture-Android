@@ -236,6 +236,7 @@ public class RollActivity extends AppCompatActivity {
         final TextView mode, when, counts, size;
         final CheckBox tick;
         SessionSummary bound;
+        final int mCountsColor;
 
         Row(View v) {
             super(v);
@@ -243,6 +244,9 @@ public class RollActivity extends AppCompatActivity {
             mode = v.findViewById(R.id.roll_mode);
             when = v.findViewById(R.id.roll_when);
             counts = v.findViewById(R.id.roll_counts);
+            // Kept so a row recycled out of a warning goes back to its normal colour; rows are
+            // reused, and a red line that stuck would accuse a healthy session.
+            mCountsColor = counts.getTextColors().getDefaultColor();
             size = v.findViewById(R.id.roll_size);
             tick = v.findViewById(R.id.roll_tick);
             v.setOnClickListener(x -> {
@@ -276,7 +280,17 @@ public class RollActivity extends AppCompatActivity {
             mode.setText(s.mode + "  " + s.kind);
             mode.setTextColor(modeColor(s.mode));
             when.setText(s.when);
-            counts.setText(s.countsText());
+            // The counts line carries the receipt's complaint when there is one. A session
+            // whose files merely lack video looks identical to one where the operator pressed
+            // record and nothing arrived, and only the second is a failure to act on -- on
+            // 2026-09-14 the difference went unnoticed for six days.
+            if (s.receiptWarning != null) {
+                counts.setText(s.countsText() + "  ·  " + s.receiptWarning);
+                counts.setTextColor(getResources().getColor(R.color.rollWarning, null));
+            } else {
+                counts.setText(s.countsText());
+                counts.setTextColor(mCountsColor);
+            }
             size.setText(s.sizeText());
             File src = !s.stills.isEmpty() ? firstJpeg(s) : s.video;
             if (src != null) {

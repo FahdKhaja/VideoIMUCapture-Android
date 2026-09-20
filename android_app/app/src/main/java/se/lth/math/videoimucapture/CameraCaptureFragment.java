@@ -308,24 +308,33 @@ public class CameraCaptureFragment extends Fragment
      * left "5 shots" sitting where the mode should be after a run ended — the state
      * readout permanently replaced by the last thing that happened to it.
      */
-    private void onCaptureRunState(boolean running, String summary) {
+    private void onCaptureRunState(CaptureModeManager.RunState state) {
         if (mCaptureButton != null) {
-            mCaptureButton.setImageResource(
-                    running ? R.drawable.ic_capture_stop : R.drawable.ic_capture_still);
+            // The icon says what THIS button does, not whether the phone is busy. During a
+            // plain video clip the capture button starts a stills run, so it must not wear a
+            // stop icon: the record button is the one that stops the video.
+            mCaptureButton.setImageResource(state.stillsRunning
+                    ? R.drawable.ic_capture_stop : R.drawable.ic_capture_still);
             mCaptureButton.setBackgroundTintList(
                     android.content.res.ColorStateList.valueOf(
-                            getResources().getColor(running
+                            getResources().getColor(state.stillsRunning
                                     ? R.color.captureButtonActiveBkg
                                     : R.color.captureButtonBkg, null)));
+            // A composite is a sequence, and a second press during it used to start a second
+            // one. The press is refused underneath as well; this is so the button admits it.
+            mCaptureButton.setEnabled(!state.compositeRunning);
+            mCaptureButton.setAlpha(state.compositeRunning ? 0.4f : 1.0f);
         }
-        if (running) {
+        // The idle timer and the mode strip care about whether ANYTHING is going on, which is
+        // a different question from whether a stills run is.
+        if (state.anyActive) {
             cancelIdleTimer();
         } else {
             armIdleTimer();
         }
         if (mCaptureStatusText != null) {
-            mCaptureStatusText.setText(summary == null ? "" : summary);
-            if (!running) {
+            mCaptureStatusText.setText(state.summary == null ? "" : state.summary);
+            if (!state.anyActive) {
                 // Clear the finished-run summary after a beat so the strip is the only
                 // persistent state on screen.
                 mCaptureStatusText.postDelayed(() -> {
@@ -335,10 +344,13 @@ public class CameraCaptureFragment extends Fragment
                 }, 4000L);
             }
         }
-        // Dim the strip while a run owns the mode, so it reads as unavailable.
+        // Dim the strip while anything owns the mode, so it reads as unavailable. A video
+        // recording owns it just as a stills run does -- the mode decides the discipline the
+        // clip is being shot under, and changing it mid-clip would make the directory name a
+        // lie about what the frames were.
         if (mModeViews != null) {
             for (TextView v : mModeViews) {
-                v.setEnabled(!running);
+                v.setEnabled(!state.anyActive);
             }
         }
     }
@@ -714,10 +726,18 @@ public class CameraCaptureFragment extends Fragment
             );
             enableWarning(false);
         } else {
-            // We have camera settings, update warning accordingly.
+            // We have camera settings, update warning accordingly. The warning means "a
+            // setting is on that makes this capture something other than a measurement", so
+            // IMU batching belongs in it: batched delivery is free for a recorder and is not
+            // free for the stillness shutter, which reads the stream live to decide when a
+            // walk fires a still. A quiet moment seen 100 ms late is a still fired 14 cm
+            // further down the walk, and nothing in the resulting file would look wrong.
+            boolean batching = androidx.preference.PreferenceManager
+                    .getDefaultSharedPreferences(getActivity()).getInt("imu_batch_ms", 0) > 0;
             enableWarning(cameraSettingsManager.OISEnabled()
                     || cameraSettingsManager.DVSEnabled()
                     || cameraSettingsManager.DistortionCorrectionEnabled()
+                    || batching
                     || !getmImuManager().sensorsExist());
         }
     }

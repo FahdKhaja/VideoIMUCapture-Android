@@ -41,9 +41,39 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
 
     public enum Mode {WALK, OBJECT, PANO}
 
+    /**
+     * What is actually running, for the UI.
+     *
+     * One boolean used to carry all of this, and it could not, because the two start controls
+     * are independent: during a video-only recording something IS running, but a stills run is
+     * NOT, and those two facts drive different parts of the screen. Collapsing them put the
+     * capture button into its stop state during a plain video clip -- where pressing it does
+     * not stop anything, it starts a stills run.
+     */
+    public static final class RunState {
+        /** A stills run is live. This is what the capture button is a stop button FOR. */
+        public final boolean stillsRunning;
+        /** A video recording is live, whether or not it owns the session. */
+        public final boolean videoActive;
+        /** An OBJECT composite is part-way through its sequence. */
+        public final boolean compositeRunning;
+        /** Anything at all is going on: what the idle timer and the mode strip care about. */
+        public final boolean anyActive;
+        public final String summary;
+
+        RunState(boolean stillsRunning, boolean videoActive, boolean compositeRunning,
+                 String summary) {
+            this.stillsRunning = stillsRunning;
+            this.videoActive = videoActive;
+            this.compositeRunning = compositeRunning;
+            this.anyActive = stillsRunning || videoActive || compositeRunning;
+            this.summary = summary;
+        }
+    }
+
     /** Fired on the main thread when a run starts or stops, for UI state. */
     public interface StateListener {
-        void onRunStateChanged(boolean running, String summary);
+        void onRunStateChanged(RunState state);
     }
 
     private final CameraCaptureActivity mActivity;
@@ -73,6 +103,13 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
     // the other's, so "the session is over" is not a fact either path holds alone.
     private SessionManifest mManifest;
     private boolean mVideoActive = false;
+    // An OBJECT composite is a 15-second SEQUENCE of posted stages, not an instant, and the
+    // button that fires it had no guard. Two presses started two composites: two directories,
+    // two writers racing for the same file, two sets of stage handlers reconfiguring focus and
+    // exposure under each other, and a lockAutoAlgorithms(false) from the first landing in the
+    // middle of the second. The button gives no hint that it is busy, so this was one
+    // impatient tap away at all times.
+    private boolean mCompositeActive = false;
 
     public CaptureModeManager(CameraCaptureActivity activity) {
         mActivity = activity;
@@ -84,8 +121,12 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
     }
 
     public void setMode(Mode mode) {
-        if (mRunning) {
-            Log.w(TAG, "mode change ignored while a run is active");
+        // A video recording and a composite own the mode just as a stills run does: the mode
+        // is the discipline the clip is being shot under and it names the directory, so
+        // changing it mid-clip makes the name a lie about what the frames were. The strip is
+        // dimmed for all three; this refuses the change if anything gets past that.
+        if (mRunning || mVideoActive || mCompositeActive) {
+            Log.w(TAG, "mode change ignored while a capture is active");
             return;
         }
         mMode = mode;
@@ -143,7 +184,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             if (mManifest != null) {
                 mManifest.noteVideoRequested();
             }
-            notifyState(true, mMode + " · stills + video");
+            notifyState(mMode + " · stills + video");
             Log.i(TAG, "video joining the active " + mMode + " run in " + mRunDir);
             return mRunDir;
         }
@@ -174,7 +215,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             proxy.lockAutoAlgorithms(true);
         }
         Log.i(TAG, "video session radiometry " + (mVideoLockedRadiometry ? "locked" : "floating"));
-        notifyState(true, mMode == Mode.OBJECT
+        notifyState(mMode == Mode.OBJECT
                 ? "OBJECT · video (adds little to a fixed viewpoint)"
                 : mMode + " · video");
         Log.i(TAG, "video session started in " + dir + " (mode " + mMode + ")");
@@ -191,7 +232,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             if (!mRunning) {
                 sealSession();
             }
-            notifyState(mRunning, mRunning ? mMode + " · stills" : "");
+            notifyState(mRunning ? mMode + " · stills" : "");
             return;
         }
         mVideoOwnsSession = false;
@@ -206,7 +247,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             sealSession();
             mRunDir = null;
         }
-        notifyState(false, "video saved");
+        notifyState(mRunning ? mMode + " · stills" : "video saved");
         Log.i(TAG, "video session ended: " + dir);
     }
 
@@ -344,7 +385,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // an interval.
         startRunStereo(proxy);
 
-        notifyState(true, mMode + " · stills");
+        notifyState(mMode + " · stills");
         Log.i(TAG, "run started in " + mRunDir);
     }
 
@@ -427,7 +468,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             // The video kept recording pictures and stopped recording anything that explains
             // them, which no file in the archive would show as anything but a short session.
             if (mVideoActive) {
-                notifyState(true, mMode + " · video");
+                notifyState(mMode + " · video");
                 Log.i(TAG, "stills stopped; video still recording, streams left open");
                 return;
             }
@@ -437,7 +478,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             if (owns && writer != null) {
                 writer.stopRecording();
             }
-            notifyState(false, shots + " shots");
+            notifyState(shots + " shots");
             sealSession();
         }, 2500L);
         Log.i(TAG, "run stopped after " + shots + " shots");
@@ -482,6 +523,10 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
     // ------------------------------------------------------------------- object mode
 
     private void fireObjectComposite() {
+        if (mCompositeActive) {
+            Log.w(TAG, "composite already running; ignoring the press");
+            return;
+        }
         Camera2Proxy proxy = mActivity.getmCamera2Proxy();
         if (proxy == null) {
             return;
@@ -490,6 +535,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         if (dir == null) {
             return;
         }
+        mCompositeActive = true;
         // OBJECT runs its own session start to finish and never joins one, so its receipt is
         // local to the composite rather than the field the two continuous paths share.
         final SessionManifest manifest = new SessionManifest(mActivity, dir, mMode.name(), mTestTag);
@@ -530,17 +576,17 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // lens to report it has arrived, up to 400 ms per step plus 120 ms of spacing. Five
         // slices is therefore 2.6 s worst case against the 167 ms the burst version took —
         // which is the whole reason that version came back with five identical pictures.
-        notifyState(true, "OBJECT: focus stack");
+        notifyState("OBJECT · focus stack");
         proxy.captureFocusStack(5, false, dir, writer);
 
         mMain.postDelayed(() -> {
-            notifyState(true, "OBJECT: exposure bracket");
+            notifyState("OBJECT · exposure bracket");
             proxy.captureStills(StillCaptureManager.Mode.EXPOSURE_BRACKET, 5, 2.0f,
                     false, dir, writer);
         }, 4000L);
 
         mMain.postDelayed(() -> {
-            notifyState(true, "OBJECT: full-quality RAW");
+            notifyState("OBJECT · full-quality RAW");
             proxy.captureStills(StillCaptureManager.Mode.SINGLE, 1, 0f, true, dir, writer);
         }, 7000L);
 
@@ -553,7 +599,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         final boolean hasStereo = scm != null && scm.stereoSupported();
         if (hasStereo) {
             mMain.postDelayed(() -> {
-                notifyState(true, "OBJECT: stereo pair (metric scale)");
+                notifyState("OBJECT · stereo pair (metric scale)");
                 proxy.captureStereoPair(dir, writer);
             }, 10000L);
         }
@@ -569,16 +615,27 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
                 mActivity.getmThermalLogger().stopRecording();
                 writer.stopRecording();
             }
-            notifyState(false, hasStereo ? "OBJECT complete + stereo" : "OBJECT complete");
+            mCompositeActive = false;
+            notifyState(hasStereo ? "OBJECT complete + stereo" : "OBJECT complete");
             manifest.noteStereoPairs(hasStereo ? 1 : 0);
             mMain.postDelayed(() -> manifest.write(writer.accounting()), 1200L);
             Log.i(TAG, "object composite complete: " + dir);
         }, hasStereo ? 15500L : 10500L);   // stereo adds a warm-up before its capture
     }
 
-    private void notifyState(boolean running, String summary) {
-        if (mStateListener != null) {
-            mMain.post(() -> mStateListener.onRunStateChanged(running, summary));
+    /**
+     * Tell the UI what is running, reading the state rather than being told it.
+     *
+     * Every call site used to pass its own idea of "running", which is how a video session
+     * came to announce itself as a live stills run. The caller now supplies only the sentence;
+     * the facts come from the fields that actually hold them.
+     */
+    private void notifyState(String summary) {
+        if (mStateListener == null) {
+            return;
         }
+        final RunState state =
+                new RunState(mRunning, mVideoActive, mCompositeActive, summary);
+        mMain.post(() -> mStateListener.onRunStateChanged(state));
     }
 }
