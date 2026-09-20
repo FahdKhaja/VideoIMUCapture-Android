@@ -105,6 +105,33 @@ public class RecordingWriter implements Runnable{
                 mFrameTimeDropped, mFrameTimeMergeDropped);
     }
 
+    /**
+     * The last thing in the file: what happened to the frame records. Written on the writer
+     * thread as the poison pill is taken, so the counts include everything that was merged.
+     */
+    private void writeFrameAccounting() throws IOException {
+        FrameAccounting a = accounting();
+        RecordingProtos.VideoCaptureData.newBuilder()
+                .setFrameAccounting(RecordingProtos.FrameAccounting.newBuilder()
+                        .setMetaWritten(a.metaWritten)
+                        .setMetaDroppedQueueFull(a.metaDroppedQueue)
+                        .setMetaDroppedUnmatched(a.metaDroppedMerge)
+                        .setTimeDroppedQueueFull(a.timeDroppedQueue)
+                        .setTimeDroppedUnmatched(a.timeDroppedMerge)
+                        .setComplete(a.isComplete()))
+                .build().writeTo(mFileStream);
+        if (!a.isComplete()) {
+            Log.w(TAG, String.format(java.util.Locale.US,
+                    "sealing with %d frame records lost (%d written): queue meta=%d time=%d, "
+                            + "unmatched meta=%d time=%d. Position-based joins on this file "
+                            + "will be off by that much after the first hole.",
+                    a.totalDropped(), a.metaWritten, a.metaDroppedQueue, a.timeDroppedQueue,
+                    a.metaDroppedMerge, a.timeDroppedMerge));
+        } else {
+            Log.i(TAG, "sealing complete: " + a.metaWritten + " frame records, none lost");
+        }
+    }
+
     //Other state variables
     private Boolean mIsRecording = false;
 
@@ -150,6 +177,7 @@ public class RecordingWriter implements Runnable{
             while (true) {
                 MessageWrapper msg = mQueue.take();
                 if (msg.equals(mPoisonPill)) {
+                    writeFrameAccounting();
                     mFileStream.flush();
                     mFileStream.close();
                     mIsRecording = false;

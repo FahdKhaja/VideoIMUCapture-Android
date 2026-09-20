@@ -430,6 +430,16 @@ message IMUInfo {
   optional int32 gyro_min_delay_us = 12;    // Sensor.getMinDelay(): the part's own claimed floor
   optional int32 accel_min_delay_us = 13;
   optional int32 mag_min_delay_us = 14;
+
+  // ReconStab #63. Delivery was one event at a time -- no maxReportLatency anywhere -- which
+  // since #42 raised the rate is ~470 wakeups a second per sensor while the GPU encodes. These
+  // record what batching was actually in force, because the cost of a gap in the gyro stream is
+  // that it is INVISIBLE: the samples that do arrive are correctly stamped, so a hole looks like
+  // nothing at all. A reader histogramming inter-sample intervals needs to know whether it is
+  // looking at a batched stream before it calls a gap a fault.
+  optional int32 batch_latency_us = 15;      // maxReportLatencyUs asked for, 0 = unbatched
+  optional int32 gyro_fifo_reserved = 16;    // getFifoReservedEventCount(): what the FIFO holds
+  optional int32 accel_fifo_reserved = 17;
 }
 
 message IMUData {
@@ -509,6 +519,31 @@ message VideoCaptureData {
   repeated GnssStatusData gnss_status = 14;
   repeated GnssNavigationMessageData gnss_navigation = 15;
   repeated GnssAntennaInfoData gnss_antenna = 16;
+
+  // ReconStab #52. Written once, last, as the file is sealed.
+  FrameAccounting frame_accounting = 17;
+}
+
+/**
+ * What happened to the frame records, so that a hole in them is a fact in the file rather than
+ * something a reader has to notice.
+ *
+ * The August jetty clip carries 9,457 records against 9,462 encoded frames and says nothing
+ * about the difference. Five of them were discarded by the merge -- a metadata message whose
+ * timestamp partner never arrived within 10 us -- and the only trace was a Log.d on a device
+ * that has long since rebooted. That matters more than five frames sounds: downstream joins
+ * images to records BY LIST POSITION, so one silent hole shifts every record after it by one,
+ * which is how the wrong August focal length was measured (#48).
+ *
+ * A reader should check `complete` before trusting position-based joins at all.
+ */
+message FrameAccounting {
+  int32 meta_written = 1;              // records actually written to this file
+  int32 meta_dropped_queue_full = 2;   // the camera outran the encoder and the queue filled
+  int32 meta_dropped_unmatched = 3;    // no VideoFrameToTimestamp partner within the window
+  int32 time_dropped_queue_full = 4;
+  int32 time_dropped_unmatched = 5;
+  bool complete = 6;                   // false when anything above was lost
 }
 
 message MessageWrapper {

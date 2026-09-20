@@ -34,6 +34,7 @@ public class IMUManager extends SensorEventCallback {
     private static final int MIN_SENSOR_PERIOD_US = 1000; // 1 kHz ceiling; a floor on the period
     private final int mDerivedRate = 10000; //Us, 100Hz for OS-fused orientation streams
     private int mRequestedRateUs = 0; // what register() actually asked for, recorded in the file
+    private int mBatchLatencyUs = 0;  // maxReportLatency actually asked for (#63), recorded too
     private long mEstimatedSensorRate = 0; // ns
     private long mPrevTimestamp = 0; // ns
     private float[] mSensorPlacement = null;
@@ -418,6 +419,12 @@ public class IMUManager extends SensorEventCallback {
         if (mMag != null) {
             builder.setMagMinDelayUs(mMag.getMinDelay());
         }
+        // What batching was in force, and what the FIFOs could have held (#63). A gap in a
+        // batched stream and a gap in an unbatched one are different findings, and the file
+        // has never said which kind it is.
+        builder.setBatchLatencyUs(mBatchLatencyUs);
+        builder.setGyroFifoReserved(fifoOf(mGyro));
+        builder.setAccelFifoReserved(fifoOf(mAccel));
 
         //Store translation for sensor placement in device coordinate system.
         if (mSensorPlacement != null) {
@@ -607,6 +614,33 @@ public class IMUManager extends SensorEventCallback {
         return minDelay > 0 ? minDelay : fallbackUs;
     }
 
+    /** How many events this sensor can hold while the CPU sleeps; 0 means no FIFO at all. */
+    private static int fifoOf(Sensor sensor) {
+        return sensor == null ? 0 : sensor.getFifoReservedEventCount();
+    }
+
+    /**
+     * The batch latency to ask for, in microseconds. 0 -- the default -- is the unbatched
+     * behaviour every clip in the archive was shot with.
+     *
+     * A sensor with no reserved FIFO cannot batch, and asking anyway is not an error: the
+     * framework simply delivers as it always did. It is still worth refusing here so that the
+     * number recorded in the file is what the hardware could actually do rather than what was
+     * typed into the setting.
+     */
+    private int batchLatencyUs() {
+        int ms = androidx.preference.PreferenceManager
+                .getDefaultSharedPreferences(mAppContext).getInt("imu_batch_ms", 0);
+        if (ms <= 0) {
+            return 0;
+        }
+        if (fifoOf(mGyro) <= 0 && fifoOf(mAccel) <= 0) {
+            Log.i(TAG, "IMU batching requested but neither sensor reserves a FIFO; unbatched");
+            return 0;
+        }
+        return ms * 1000;
+    }
+
     /**
      * This will register all IMU listeners
      * https://stackoverflow.com/questions/3286815/sensoreventlistener-in-separate-thread
@@ -633,13 +667,43 @@ public class IMUManager extends SensorEventCallback {
         mRequestedRateUs = inertialRate;
         Log.i(TAG, String.format("IMU rate requested: gyro %d us (%.1f Hz), accel %d us (%.1f Hz)",
                 inertialRate, 1e6 / inertialRate, accelRate, 1e6 / accelRate));
-        mSensorManager.registerListener(this, mAccel, accelRate, sensorHandler);
-        mSensorManager.registerListener(this, mGyro, inertialRate, sensorHandler);
+
+        // ReconStab #63: batched delivery, off by default.
+        //
+        // Every listener here has used the three-argument registerListener since the fork began,
+        // which asks the framework to wake the CPU for each event. At the rate #42 unlocked that
+        // is ~470 wakeups a second for the gyro and as many again for the accelerometer, all of
+        // it while the GPU encodes 12.5 MP frames. Sensor events carry HARDWARE timestamps, so
+        // routing them through the sensor's own FIFO delays delivery without moving a single
+        // sample in time: for a recorder the accuracy cost is zero.
+        //
+        // It is not zero for everything, which is why this is opt-in rather than simply turned
+        // on. Two things in this app read the stream as it arrives -- the stillness trigger that
+        // decides when a WALK fires a still, and the blur budget that caps exposure from the
+        // gyro rate -- and both are registered per run, long after this method has run. There is
+        // no honest way to pick a latency here that is right for a recorder AND for a trigger
+        // that is supposed to catch a quiet moment while it is still quiet. So the operator
+        // chooses, the file records what was chosen, and the default is the behaviour every clip
+        // in the archive already has.
+        int batchUs = batchLatencyUs();
+        mBatchLatencyUs = batchUs;
+        if (batchUs > 0) {
+            Log.i(TAG, String.format(java.util.Locale.US,
+                    "IMU batching %d ms (gyro FIFO %d events, accel FIFO %d)",
+                    batchUs / 1000, fifoOf(mGyro), fifoOf(mAccel)));
+        }
+        mSensorManager.registerListener(this, mAccel, accelRate, batchUs, sensorHandler);
+        mSensorManager.registerListener(this, mGyro, inertialRate, batchUs, sensorHandler);
         // The magnetometer gates every IMU record -- syncInertialData will not emit one without
         // two mag samples to interpolate between -- but it is a 100 Hz part on this device and
         // asking it for 416 Hz simply gets 100. It is registered at the same requested period so
         // it always runs as fast as it can, which is what keeps the gyro queue from waiting.
-        mSensorManager.registerListener(this, mMag, inertialRate, sensorHandler);
+        //
+        // It is batched with the other two on purpose: syncInertialData will not emit an IMU
+        // record without two mag samples to interpolate between, so a magnetometer delivered
+        // promptly into a gyro queue that is being batched would gate on samples it cannot pair
+        // yet and stall the record stream at the batch interval anyway.
+        mSensorManager.registerListener(this, mMag, inertialRate, batchUs, sensorHandler);
 
         // Auxiliary sensors — every one is optional.
         if (mPressure != null) {
