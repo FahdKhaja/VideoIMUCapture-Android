@@ -75,6 +75,113 @@ public final class TestPlan {
             this.streams = streams;
             this.mode = mode;
         }
+
+        /** Whether this cell is being ASKED FOR right now, as opposed to merely existing. */
+        public boolean isRequested() {
+            return REQUESTED.contains(id);
+        }
+    }
+
+    /**
+     * The cells currently being asked for: the standing request, in one place.
+     *
+     * The list grew to two dozen cells and became unusable, because everything in it was
+     * equally present and nothing said what to go and shoot. Deleting the answered ones was
+     * the wrong fix for that -- it cost the ability to reshoot a settled question, which is
+     * exactly what you want when the code underneath it changes, and it still left no order
+     * to what remained.
+     *
+     * So the ask lives here and the cells all stay. Everything on this list is something no
+     * capture on this phone has answered yet; when one is shot it drops out of the operator's
+     * view on its own.
+     */
+    private static final java.util.Set<String> REQUESTED = new java.util.HashSet<>(
+            java.util.Arrays.asList(
+                    "M1", "M2", "M3", "M4", "M5", "M6",     // the session says what it got
+                    "L1",                                   // every rear lens, one instant
+                    "G1", "G2",                             // measure the unpublished baselines
+                    "I1", "I2",                             // IMU batching
+                    "N1", "N2",                             // HAL sharpening and denoise
+                    "W1", "W2",                             // distortion correction
+                    "H1", "H2",                             // hyperfocal against autofocus
+                    "O1", "O2"));                           // OIS where the motor has work
+
+    // ------------------------------------------------------------------ what has been shot
+
+    private static final String DONE_PREFIX = "cell_done_";
+
+    /**
+     * When a cell was last shot, as epoch millis, or 0 if never.
+     *
+     * Per device and persistent, because "have I done this one?" is a question about this
+     * phone's history and not about the code. Cells that were shot before this existed are
+     * seeded from what the issues record, so the list is honest the first time it is opened
+     * rather than pretending a day of captures never happened.
+     */
+    public static long doneAt(SharedPreferences sp, String id) {
+        seedHistory(sp);
+        return sp.getLong(DONE_PREFIX + id, 0L);
+    }
+
+    public static boolean isDone(SharedPreferences sp, String id) {
+        return doneAt(sp, id) > 0L;
+    }
+
+    public static void markDone(SharedPreferences sp, String id) {
+        sp.edit().putLong(DONE_PREFIX + id, System.currentTimeMillis()).apply();
+    }
+
+    public static void markNotDone(SharedPreferences sp, String id) {
+        sp.edit().remove(DONE_PREFIX + id).apply();
+    }
+
+    /**
+     * The cells this phone had already shot before anything tracked it, with the dates the
+     * ReconStab issues record. Written once.
+     *
+     * A, B, C, D: the 2026-09-03 matrix, 30 s each, preserved at matrix_20260903 (#47).
+     * E: shot the same day; #44 has the clip awaiting analysis.
+     * Z1, Z2: shot on a desk, and #48 is CLOSED on their data.
+     * S1, S2: 2026-09-10, dark room; #36 carries the measurements.
+     */
+    private static void seedHistory(SharedPreferences sp) {
+        if (sp.getBoolean("cell_history_seeded", false)) {
+            return;
+        }
+        SharedPreferences.Editor ed = sp.edit();
+        long sept3 = 1788480000000L;    // 2026-09-03
+        long sept10 = 1789084800000L;   // 2026-09-10
+        for (String id : new String[]{"A", "B", "C", "D", "E", "Z1", "Z2"}) {
+            ed.putLong(DONE_PREFIX + id, sept3);
+        }
+        for (String id : new String[]{"S1", "S2"}) {
+            ed.putLong(DONE_PREFIX + id, sept10);
+        }
+        ed.putBoolean("cell_history_seeded", true).apply();
+    }
+
+    /** The cells asked for and not yet shot: the to-do list. */
+    public static List<Step> outstanding(SharedPreferences sp) {
+        List<Step> out = new ArrayList<>();
+        for (Step s : steps()) {
+            if (s.isRequested() && !isDone(sp, s.id)) {
+                out.add(s);
+            }
+        }
+        return out;
+    }
+
+    /** Everything shot on this phone, most recent first. */
+    public static List<Step> completed(SharedPreferences sp) {
+        List<Step> out = new ArrayList<>();
+        for (Step s : steps()) {
+            if (isDone(sp, s.id)) {
+                out.add(s);
+            }
+        }
+        java.util.Collections.sort(out,
+                (a, b) -> Long.compare(doneAt(sp, b.id), doneAt(sp, a.id)));
+        return out;
     }
 
     private static Map<String, Object> prefs(Object... kv) {
@@ -137,6 +244,36 @@ public final class TestPlan {
                         + "panning does not.",
                 30, prefs("blur_budget_manual", true, "lock_radiometry", false,
                         "ois", false, "ois_data", false)));
+
+        // RESTORED 2026-09-20. These were deleted to shorten the list, which was the wrong
+        // fix for the wrong problem: the list was unreadable because nothing said what to
+        // shoot, not because it was long. Deleting them cost the ability to reshoot a
+        // settled question -- and a settled question is exactly what you want to reshoot
+        // when the code underneath it changes. They live in the All view, out of the way.
+        out.add(new Step("E", "E - portrait, manual shutter, OIS ON",
+                "Hold the phone UPRIGHT (portrait), camera roughly level.\n\n" + WALK
+                        + "\n\nOIS on. The file already records what the HAL SAYS about OIS; "
+                        + "against B this says what the lens actually DID, by comparing image "
+                        + "motion with the gyro that should predict it.\n\nShot 2026-09-03; "
+                        + "#44 has the clip awaiting analysis, and O1/O2 ask the same question "
+                        + "where the motor has more to do.",
+                30, prefs("blur_budget_manual", true, "lock_radiometry", false,
+                        "ois", true, "ois_data", true)));
+
+        String zoomShot = "Point the phone at something with detail across the WHOLE frame — a "
+                + "bookshelf, a cluttered bench, a brick wall — from about two metres.\n\nHold as "
+                + "still as you can and DO NOT MOVE BETWEEN Z1 AND Z2. Shoot them back to back "
+                + "from the same spot; if the phone moves, the pair is worthless.";
+        out.add(new Step("Z1", "Z1 - zoom check, ratio 1.0",
+                zoomShot + "\n\nThis one at zoom 1.0 — the full sensor field.\n\nAnswered: #48 "
+                        + "is closed on this pair. The crop is reported and NOT applied.",
+                12, prefs("zoom_ratio", 1.0f, "blur_budget_manual", false,
+                        "lock_radiometry", false, "ois", false, "ois_data", false)));
+        out.add(new Step("Z2", "Z2 - zoom check, ratio 0.6",
+                zoomShot + "\n\nThis one at zoom 0.6 — your usual setting. If it looks TIGHTER "
+                        + "than Z1, the crop is real.\n\nAnswered: #48 is closed on this pair.",
+                12, prefs("zoom_ratio", 0.6f, "blur_budget_manual", false,
+                        "lock_radiometry", false, "ois", false, "ois_data", false)));
 
         out.add(new Step("F", "F - exposure keys, standing still",
                 "Stand still, phone UPRIGHT, pointed at something with both bright and dark in "
