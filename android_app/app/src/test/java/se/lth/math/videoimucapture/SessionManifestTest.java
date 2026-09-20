@@ -288,6 +288,26 @@ public class SessionManifestTest {
         assertTrue(root.getString("summary").contains("NO TRAILER"));
     }
 
+    /**
+     * A stills run that produced nothing at all.
+     *
+     * Counting the shortfall does not ask this on its own: if nothing was ever counted as
+     * fired there is no shortfall to report, so an empty session would read as agreement.
+     * Found by reverting agrees() to its old form and watching which tests noticed -- the
+     * pair case failed for the wrong reason, which is what exposed the gap.
+     */
+    @Test
+    public void aStillsRunThatProducedNothingDisagrees() throws Exception {
+        File dir = mFolder.newFolder("walk_empty");
+        SessionManifest m = manifest(dir, "WALK");
+        m.noteStillsRequested();          // and no noteStillsFired: nothing ever counted
+        m.write(null);
+
+        JSONObject root = read(dir);
+        assertFalse("an empty stills run is not a clean session", root.getBoolean("agrees"));
+        assertTrue(root.getString("summary").contains("NOTHING CAPTURED"));
+    }
+
     @Test
     public void anUnwritableDirectoryDoesNotThrow() {
         // A session that has just been shot must not be lost because its receipt could not be

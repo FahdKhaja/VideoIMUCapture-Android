@@ -384,8 +384,18 @@ public final class SessionManifest {
         if (mVideoRequested != measured.optBoolean("video", false)) {
             return false;
         }
-        if (mStillsRequested && shortfall(measured) > 0) {
-            return false;
+        if (mStillsRequested) {
+            if (shortfall(measured) > 0) {
+                return false;
+            }
+            // And the older, cruder question, kept because counting alone does not ask it: a
+            // stills run that produced NOTHING has no shortfall to report if nothing was ever
+            // counted as fired, and would otherwise slip through as agreement. Stereo halves
+            // count -- a run whose only output is a pair is a real capture.
+            if (measured.optInt("stills_jpg", 0) == 0
+                    && measured.optInt("stereo_halves", 0) == 0) {
+                return false;
+            }
         }
         if (mLensesConfigured > 0 && measured.optInt("stereo_bursts_seen", 0) > 0
                 && measured.optInt("lenses_in_widest_capture", 0) < mLensesConfigured) {
