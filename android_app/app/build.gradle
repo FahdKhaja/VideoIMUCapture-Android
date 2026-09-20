@@ -50,6 +50,14 @@ android {
             }
         }
     }
+
+    // Host-side tests run against a stub android.jar whose every method throws by default.
+    // Returning defaults instead lets a test exercise real logic that happens to log -- which
+    // is most of the logic worth testing here. Anything that genuinely depends on framework
+    // behaviour belongs in androidTest on a device, not here.
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
 }
 
 protobuf {
@@ -73,6 +81,10 @@ dependencies {
     implementation 'androidx.preference:preference:1.2.1'
     implementation 'androidx.recyclerview:recyclerview:1.3.2'
     testImplementation 'junit:junit:4.13.2'
+    // A real org.json on the test classpath. The one in android.jar is a stub, and
+    // returnDefaultValues would turn every put() into a no-op and every test that reads a
+    // manifest back into a test of nothing.
+    testImplementation 'org.json:json:20231013'
     androidTestImplementation 'androidx.test.ext:junit:1.2.1'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'
     implementation 'com.google.android.material:material:1.12.0'

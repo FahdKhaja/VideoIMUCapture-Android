@@ -576,15 +576,23 @@ class CameraSettingFocusMode extends CameraSetting {
                 || sensor == null) {
             return null;
         }
-        float f = focals[0];
-        float n = apertures[0];
         double diagonalMm = Math.sqrt(sensor.getWidth() * sensor.getWidth()
                 + sensor.getHeight() * sensor.getHeight());
+        return hyperfocalDiopters(focals[0], apertures[0], diagonalMm);
+    }
+
+    /**
+     * The arithmetic on its own, so it can be checked against numbers worked out by hand
+     * rather than only against whatever the device happens to report.
+     *
+     * @return diopters (1/m), or null if any input makes the formula meaningless.
+     */
+    static Float hyperfocalDiopters(float focalMm, float fNumber, double diagonalMm) {
         double c = diagonalMm / 1500.0;
-        if (f <= 0 || n <= 0 || c <= 0) {
+        if (focalMm <= 0 || fNumber <= 0 || c <= 0) {
             return null;
         }
-        double hMm = (f * f) / (n * c) + f;
+        double hMm = (focalMm * focalMm) / (fNumber * c) + focalMm;
         if (hMm <= 0) {
             return null;
         }

@@ -180,8 +180,8 @@ public final class SessionSummary {
      * that claims video over a directory with none is exactly that failure, so the roll says
      * NO VIDEO rather than quietly repeating the claim.
      */
-    private static String measuredKind(String claimed, String mode, String cell,
-                                       File video, int stillCount) {
+    static String measuredKind(String claimed, String mode, String cell,
+                               File video, int stillCount) {
         boolean hasVideo = video != null && video.length() > 0;
         String kind;
         if (hasVideo) {
