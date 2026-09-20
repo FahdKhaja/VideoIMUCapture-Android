@@ -208,6 +208,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         mShots = 0;
         mManifest = new SessionManifest(mActivity, dir, mMode.name(), mTestTag);
         mManifest.noteFreeAtStart(StorageGuard.freeBytes(new File(mActivity.getResultRoot())));
+        mManifest.noteBatteryAtStart(BatteryGuard.percent(mActivity));
         mManifest.noteVideoRequested();
         // A verdict left over from the previous clip would be reported against this one, and
         // "the last recording was fine" is not a statement about this recording.
@@ -277,6 +278,13 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         }
     }
 
+    /** ...and for charge. */
+    public void noteStoppedForBattery() {
+        if (mManifest != null) {
+            mManifest.noteStoppedForBattery();
+        }
+    }
+
     private void sealSession() {
         final SessionManifest manifest = mManifest;
         if (manifest == null) {
@@ -295,6 +303,9 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // being closed.
         if (mActivity.getmThermalLogger() != null) {
             manifest.noteWorstThermalStatus(mActivity.getmThermalLogger().worstStatus());
+        }
+        if (mActivity.getBatteryGuard() != null) {
+            manifest.noteBatteryAtEnd(mActivity.getBatteryGuard().percentNow());
         }
         mMain.postDelayed(() -> {
             manifest.noteVideoFileComplete(TextureMovieEncoder.lastFileComplete());
@@ -345,6 +356,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         if (mManifest == null) {
             mManifest = new SessionManifest(mActivity, mRunDir, mMode.name(), mTestTag);
             mManifest.noteFreeAtStart(StorageGuard.freeBytes(new File(mActivity.getResultRoot())));
+        mManifest.noteBatteryAtStart(BatteryGuard.percent(mActivity));
         }
         mManifest.noteStillsRequested();
         mWriter = mActivity.getsRecordingWriter();
@@ -674,6 +686,14 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
                 guard.begin();
             } else {
                 guard.end();
+            }
+        }
+        BatteryGuard battery = mActivity.getBatteryGuard();
+        if (battery != null) {
+            if (state.anyActive) {
+                battery.begin();
+            } else {
+                battery.end();
             }
         }
         mMain.post(() -> mStateListener.onRunStateChanged(state));

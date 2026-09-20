@@ -58,6 +58,9 @@ public final class SessionManifest {
     private Boolean mVideoFileComplete = null;
     private boolean mStoppedForHeat = false;
     private int mWorstThermalStatus = -1;
+    private boolean mStoppedForBattery = false;
+    private int mBatteryAtStart = -1;
+    private int mBatteryAtEnd = -1;
 
     public SessionManifest(android.content.Context context, File dir, String mode,
                            String testTag) {
@@ -139,6 +142,19 @@ public final class SessionManifest {
         mWorstThermalStatus = status;
     }
 
+    /** ...and for charge, with the level at each end so the drain is readable afterwards. */
+    public void noteStoppedForBattery() {
+        mStoppedForBattery = true;
+    }
+
+    public void noteBatteryAtStart(int percent) {
+        mBatteryAtStart = percent;
+    }
+
+    public void noteBatteryAtEnd(int percent) {
+        mBatteryAtEnd = percent;
+    }
+
     /**
      * Measure the directory and write the manifest. Never throws: a session that has just
      * been shot must not be lost because its receipt could not be written.
@@ -194,6 +210,22 @@ public final class SessionManifest {
             thermal.put("stopped_for_heat", mStoppedForHeat);
             thermal.put("throttled", mWorstThermalStatus >= ThermalLogger.STATUS_MODERATE);
             root.put("thermal", thermal);
+
+            // Charge at both ends. The drain across a session is the number that says whether
+            // the next walk of this length will finish, which is a question the operator
+            // otherwise has to answer by guessing.
+            JSONObject battery = new JSONObject();
+            if (mBatteryAtStart >= 0) {
+                battery.put("percent_at_start", mBatteryAtStart);
+            }
+            if (mBatteryAtEnd >= 0) {
+                battery.put("percent_at_end", mBatteryAtEnd);
+            }
+            if (mBatteryAtStart >= 0 && mBatteryAtEnd >= 0) {
+                battery.put("percent_used", Math.max(0, mBatteryAtStart - mBatteryAtEnd));
+            }
+            battery.put("stopped_for_battery", mStoppedForBattery);
+            root.put("battery", battery);
 
             root.put("agrees", agrees(measured));
             root.put("summary", summary(measured, frames));
@@ -325,6 +357,9 @@ public final class SessionManifest {
         }
         if (mStoppedForSpace) {
             sb.append(" — ENDED EARLY: the card ran out");
+        }
+        if (mStoppedForBattery) {
+            sb.append(" — ENDED EARLY: the battery ran down");
         }
         if (mStoppedForHeat) {
             sb.append(" — ENDED EARLY: the phone was too hot");

@@ -138,6 +138,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
     private boolean mVolumeKeysConsumed = false;
     private static RecordingWriter sRecordingWriter = new RecordingWriter();
     private StorageGuard mStorageGuard;
+    private BatteryGuard mBatteryGuard;
     private CaptureModeManager mCaptureModeManager;
 
     public CameraSettingsManager getmCameraSettingsManager() {
@@ -380,6 +381,8 @@ public class CameraCaptureActivity extends AppCompatActivity {
         mStorageGuard = new StorageGuard(new File(getResultRoot()));
         mStorageGuard.setListener(this::onStorageCritical);
         mThermalLogger.setListener(this::onThermalCritical);
+        mBatteryGuard = new BatteryGuard(this);
+        mBatteryGuard.setListener(this::onBatteryCritical);
 
         if (savedInstanceState == null) {
             ToolBarFragment fragment = new ToolBarFragment();
@@ -591,6 +594,35 @@ public class CameraCaptureActivity extends AppCompatActivity {
         return mStorageGuard;
     }
 
+    public BatteryGuard getBatteryGuard() {
+        return mBatteryGuard;
+    }
+
+    /**
+     * The battery is down to the reserve. Same argument as the other two guards: a process
+     * killed by an empty battery writes no mp4 trailer, no closing RAW, no frame accounting
+     * and no receipt, so the session is ended while ending it still works.
+     *
+     * This is the failure with the least warning of the three -- a full card and a hot phone
+     * both announce themselves on the readout for a while first, and a flat battery is a black
+     * screen mid-stride.
+     */
+    private void onBatteryCritical(BatteryGuard.Status status) {
+        Log.e(TAG, "battery critical at " + status.percent + "%: ending the capture");
+        if (mCaptureModeManager != null) {
+            mCaptureModeManager.noteStoppedForBattery();
+        }
+        stopEverything();
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Battery low — capture stopped")
+                .setMessage(status.percent + "% left, so the session was ended while it could "
+                        + "still be closed properly. Everything recorded up to that point is "
+                        + "intact.\n\nCharge, or plug into a power bank — a capture that is "
+                        + "charging is never stopped by this.")
+                .setPositiveButton("OK", null)
+                .show();
+    }
+
     /**
      * The card is down to the reserve. End the capture NOW, while ending it is still
      * possible -- the muxer's trailer, the closing RAW, the frame accounting and the manifest
@@ -673,6 +705,23 @@ public class CameraCaptureActivity extends AppCompatActivity {
         // and every one of them already handles a null. Nothing has ever asked how much room
         // was left: a WALK is hundreds of full-resolution JPEGs on top of a ~94 Mbit/s video
         // stream, and the first anyone knew of a full card was at a desk afterwards.
+        // Charge, before space, because it is the cheaper check and the ruder failure: a card
+        // that fills stops a walk, a battery that empties takes the session with it.
+        if (!BatteryGuard.enoughToStart(this)) {
+            int pct = BatteryGuard.percent(this);
+            String msg = "Battery at " + pct + "%. A capture is one of the heaviest things "
+                    + "this phone can do — camera, encoder, IMU and GNSS all at once — and a "
+                    + "session that dies mid-walk loses the whole recording, not just the end "
+                    + "of it.\n\nCharge, or plug into a power bank; a charging phone is never "
+                    + "refused.";
+            Log.e(TAG, "refusing to start a session: battery " + pct + "%");
+            runOnUiThread(() -> new androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("Not enough charge")
+                    .setMessage(msg)
+                    .setPositiveButton("OK", null)
+                    .show());
+            return null;
+        }
         File root = new File(getResultRoot());
         if (!StorageGuard.enoughToStart(root)) {
             long free = StorageGuard.freeBytes(root);

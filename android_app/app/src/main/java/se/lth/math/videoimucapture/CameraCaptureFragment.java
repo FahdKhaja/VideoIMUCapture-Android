@@ -723,7 +723,18 @@ public class CameraCaptureFragment extends Fragment
                         : String.format(Locale.getDefault(), "ROOM %dmin|", st.secondsLeft / 60);
             }
         }
-        final String line = "|" + hold + smear + room + clock + pairs + ev + sfl + "|"
+        // Charge, but only once it is worth the room on the line: above 20% the phone's own
+        // status bar is right there, and a readout that shows everything all the time is one
+        // the operator stops reading.
+        String batt = "";
+        if (act != null && act.getBatteryGuard() != null
+                && act.getBatteryGuard().isWatching()) {
+            BatteryGuard.Status bs = act.getBatteryGuard().status();
+            if (bs != null && (bs.low || bs.critical || bs.charging)) {
+                batt = BatteryGuard.readout(bs);
+            }
+        }
+        final String line = "|" + hold + smear + batt + room + clock + pairs + ev + sfl + "|"
                 + sexpotime + "|" + imuHz + "|" + heat;
 
         getActivity().runOnUiThread(() -> {
