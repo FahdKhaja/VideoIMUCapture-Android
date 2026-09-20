@@ -62,14 +62,34 @@ public class StillCaptureManager {
     private static final int MAX_BURST = 9;
 
     /**
-     * The one pair on this device with a published baseline: ultrawide (physical 2) sits
+     * The pair with a published baseline: on this device the ultrawide (physical 2) sits
      * LENS_POSE_TRANSLATION = 18.02 mm from the main camera (physical 5), and both carry
      * factory intrinsics. A SIMULTANEOUS pair across a known baseline is metric scale
      * from a single capture — the quantity a monocular walk cannot produce without
      * external control, and the reason this stage exists at all.
+     *
+     * DERIVED, not assumed (ReconStab #10). "2" and "5" were the last hardcoded device facts
+     * in the capture path; everything else is read from the census. They are now the fallback
+     * for a device that will not answer, and the roles are worked out from what the physical
+     * cameras publish about themselves: the reference lens is the one whose pose translation
+     * is the origin, and the ultrawide is the shortest focal length beside it.
+     *
+     * The chosen ids are recorded per stereo half, and the census carries every physical
+     * camera's LENS_POSE_TRANSLATION, so the baseline is recoverable from the file rather
+     * than being a constant a reader has to already know.
      */
-    public static final String PHYS_ULTRAWIDE = "2";
-    public static final String PHYS_MAIN = "5";
+    private static volatile String sPhysUltrawide = "2";
+    private static volatile String sPhysMain = "5";
+
+    /** The wide-baseline half of the pair (shortest focal). */
+    public static String physUltrawide() {
+        return sPhysUltrawide;
+    }
+
+    /** The reference half of the pair (pose translation at the origin). */
+    public static String physMain() {
+        return sPhysMain;
+    }
 
     /**
      * Physical streams are constrained: the probe found YUV at 1920x1080 configures
@@ -175,7 +195,8 @@ public class StillCaptureManager {
             return;
         }
         java.util.Set<String> physicals = mCharacteristics.getPhysicalCameraIds();
-        if (!physicals.contains(PHYS_ULTRAWIDE) || !physicals.contains(PHYS_MAIN)) {
+        resolveLensRoles(physicals);
+        if (!physicals.contains(sPhysUltrawide) || !physicals.contains(sPhysMain)) {
             Log.i(TAG, "no ultrawide+main physical pair; stereo stage disabled");
             return;
         }
@@ -186,17 +207,93 @@ public class StillCaptureManager {
         mStereoUwReader = ImageReader.newInstance(STEREO_SIZE.getWidth(),
                 STEREO_SIZE.getHeight(), ImageFormat.YUV_420_888, STEREO_READER_DEPTH);
         mStereoUwReader.setOnImageAvailableListener(
-                r -> onStereoImage(r, PHYS_ULTRAWIDE, "uw"), mHandler);
+                r -> onStereoImage(r, sPhysUltrawide, "uw"), mHandler);
         mStereoMainReader = ImageReader.newInstance(STEREO_SIZE.getWidth(),
                 STEREO_SIZE.getHeight(), ImageFormat.YUV_420_888, STEREO_READER_DEPTH);
         mStereoMainReader.setOnImageAvailableListener(
-                r -> onStereoImage(r, PHYS_MAIN, "main"), mHandler);
+                r -> onStereoImage(r, sPhysMain, "main"), mHandler);
         mStereoSupported = true;
         Integer sync = Build.VERSION.SDK_INT >= 28
                 ? mCharacteristics.get(CameraCharacteristics.LOGICAL_MULTI_CAMERA_SENSOR_SYNC_TYPE)
                 : null;
         Log.d(TAG, "stereo pair ready at " + STEREO_SIZE + "; sensor sync type "
                 + sync + " (0 approximate, 1 calibrated)");
+    }
+
+    /**
+     * Work out which two physical cameras are the pair, from what they publish (ReconStab #10).
+     *
+     * The rule follows the geometry rather than the device. LENS_POSE_TRANSLATION is given in
+     * the logical camera's own frame, so the lens at the ORIGIN is the reference the logical
+     * camera is built around -- the main. Of the others, the one with the shortest focal length
+     * is the ultrawide, which is also the one that will be furthest from the main and therefore
+     * the longest baseline on offer.
+     *
+     * A lens that publishes no pose translation is not a candidate at any focal length: without
+     * it there is no baseline, and a pair without a baseline is two pictures rather than a
+     * measurement.
+     *
+     * If the device will not answer, the S24U's own ids stand. Nothing here changes what this
+     * phone does -- it should resolve to exactly 2 and 5, and the log says so on every start so
+     * that a device which resolves differently says so out loud rather than quietly shooting a
+     * different pair.
+     */
+    private void resolveLensRoles(java.util.Set<String> physicals) {
+        if (physicals == null || physicals.size() < 2) {
+            return;
+        }
+        String reference = null;
+        String widest = null;
+        float widestFocal = Float.MAX_VALUE;
+        double referenceOffset = Double.MAX_VALUE;
+        java.util.Map<String, Float> focals = new java.util.LinkedHashMap<>();
+        java.util.Map<String, Double> offsets = new java.util.LinkedHashMap<>();
+
+        for (String id : physicals) {
+            try {
+                CameraCharacteristics ch = mCameraManager.getCameraCharacteristics(id);
+                float[] translation = ch.get(CameraCharacteristics.LENS_POSE_TRANSLATION);
+                float[] focalLengths =
+                        ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                if (translation == null || translation.length < 3
+                        || focalLengths == null || focalLengths.length == 0) {
+                    continue;
+                }
+                double offset = Math.sqrt(translation[0] * translation[0]
+                        + translation[1] * translation[1] + translation[2] * translation[2]);
+                focals.put(id, focalLengths[0]);
+                offsets.put(id, offset);
+                if (offset < referenceOffset) {
+                    referenceOffset = offset;
+                    reference = id;
+                }
+            } catch (CameraAccessException | IllegalArgumentException e) {
+                Log.w(TAG, "could not read physical camera " + id + ": " + e);
+            }
+        }
+        for (java.util.Map.Entry<String, Float> e : focals.entrySet()) {
+            if (e.getKey().equals(reference)) {
+                continue;
+            }
+            if (e.getValue() < widestFocal) {
+                widestFocal = e.getValue();
+                widest = e.getKey();
+            }
+        }
+        if (reference == null || widest == null) {
+            Log.i(TAG, "lens roles could not be derived (physicals " + physicals
+                    + "); keeping " + sPhysUltrawide + " + " + sPhysMain);
+            return;
+        }
+        boolean changed = !reference.equals(sPhysMain) || !widest.equals(sPhysUltrawide);
+        sPhysMain = reference;
+        sPhysUltrawide = widest;
+        Log.i(TAG, String.format(java.util.Locale.US,
+                "lens roles derived: main=%s (focal %.2f mm, offset %.2f mm), "
+                        + "ultrawide=%s (focal %.2f mm, offset %.2f mm)%s",
+                reference, focals.get(reference), offsets.get(reference) * 1000.0,
+                widest, focals.get(widest), offsets.get(widest) * 1000.0,
+                changed ? "  -- DIFFERENT from the hardcoded pair" : ""));
     }
 
     public boolean stereoSupported() {
@@ -207,8 +304,8 @@ public class StillCaptureManager {
     public java.util.Map<String, android.view.Surface> getStereoSurfaces() {
         java.util.LinkedHashMap<String, android.view.Surface> out = new java.util.LinkedHashMap<>();
         if (mStereoSupported) {
-            out.put(PHYS_ULTRAWIDE, mStereoUwReader.getSurface());
-            out.put(PHYS_MAIN, mStereoMainReader.getSurface());
+            out.put(sPhysUltrawide, mStereoUwReader.getSurface());
+            out.put(sPhysMain, mStereoMainReader.getSurface());
         }
         return out;
     }
@@ -428,7 +525,7 @@ public class StillCaptureManager {
         if (!mPeriodicActive || imageTs < mPeriodicTargetTs) {
             return false;
         }
-        if (PHYS_ULTRAWIDE.equals(physicalId)) {
+        if (sPhysUltrawide.equals(physicalId)) {
             if (mPeriodicKeptUw) {
                 return false;
             }
@@ -475,7 +572,7 @@ public class StillCaptureManager {
             CaptureRequest.Builder b;
             if (Build.VERSION.SDK_INT >= 28) {
                 java.util.Set<String> ids = new java.util.HashSet<>(
-                        java.util.Arrays.asList(PHYS_ULTRAWIDE, PHYS_MAIN));
+                        java.util.Arrays.asList(sPhysUltrawide, sPhysMain));
                 b = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE, ids);
             } else {
                 b = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
@@ -485,8 +582,8 @@ public class StillCaptureManager {
             b.addTarget(mStereoUwReader.getSurface());
             b.addTarget(mStereoMainReader.getSurface());
             session.capture(b.build(), mStereoCallback, mHandler);
-            Log.i(TAG, "stereo pair requested (physical " + PHYS_ULTRAWIDE
-                    + " + " + PHYS_MAIN + ")");
+            Log.i(TAG, "stereo pair requested (physical " + sPhysUltrawide
+                    + " + " + sPhysMain + ")");
         } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
             Log.e(TAG, "stereo capture failed: " + e);
         }
@@ -504,8 +601,8 @@ public class StillCaptureManager {
                     // this callback, the same race that broke DNG writing. The
                     // filenames are deterministic from the burst id, so nothing has to
                     // wait for the pixels.
-                    writeStereoMeta(result, PHYS_ULTRAWIDE, "uw", 0);
-                    writeStereoMeta(result, PHYS_MAIN, "main", 1);
+                    writeStereoMeta(result, sPhysUltrawide, "uw", 0);
+                    writeStereoMeta(result, sPhysMain, "main", 1);
                 }
             };
 
@@ -544,7 +641,7 @@ public class StillCaptureManager {
                 burstId = mPeriodicBurstId;
             } else {
                 periodic = false;
-                boolean armed = PHYS_ULTRAWIDE.equals(physicalId)
+                boolean armed = sPhysUltrawide.equals(physicalId)
                         ? mStereoWantUw.compareAndSet(true, false)
                         : mStereoWantMain.compareAndSet(true, false);
                 if (!armed) {
@@ -586,7 +683,7 @@ public class StillCaptureManager {
             // Still on the camera handler, same thread as onRepeatingResult, so the pending
             // list and the result window need no lock. Match now if the result is already
             // here; otherwise the result's arrival writes the row.
-            int index = PHYS_ULTRAWIDE.equals(physicalId) ? 0 : 1;
+            int index = sPhysUltrawide.equals(physicalId) ? 0 : 1;
             TotalCaptureResult r = nearestPeriodicResult(imageTs);
             if (r != null) {
                 writeStereoMeta(r, physicalId, tag, index, burstId, mPeriodicCaptureMode,
@@ -790,7 +887,7 @@ public class StillCaptureManager {
         if (Build.VERSION.SDK_INT < 28) {
             return;
         }
-        for (String pid : new String[]{PHYS_ULTRAWIDE, PHYS_MAIN}) {
+        for (String pid : new String[]{sPhysUltrawide, sPhysMain}) {
             Rect active = physicalActiveArray(pid);
             if (active != null) {
                 try {
@@ -803,7 +900,7 @@ public class StillCaptureManager {
     }
 
     public static java.util.Set<String> stereoPhysicalIds() {
-        return new java.util.HashSet<>(java.util.Arrays.asList(PHYS_ULTRAWIDE, PHYS_MAIN));
+        return new java.util.HashSet<>(java.util.Arrays.asList(sPhysUltrawide, sPhysMain));
     }
 
     private boolean hasCapability(int capability) {
@@ -1079,7 +1176,7 @@ public class StillCaptureManager {
         if (Build.VERSION.SDK_INT < 28) {
             return;
         }
-        for (String pid : new String[]{PHYS_ULTRAWIDE, PHYS_MAIN}) {
+        for (String pid : new String[]{sPhysUltrawide, sPhysMain}) {
             Rect active = physicalActiveArray(pid);
             if (active != null) {
                 b.setPhysicalCameraKey(CaptureRequest.SCALER_CROP_REGION, active, pid);
