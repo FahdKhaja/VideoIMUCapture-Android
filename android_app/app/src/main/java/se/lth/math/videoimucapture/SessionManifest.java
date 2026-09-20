@@ -266,9 +266,7 @@ public final class SessionManifest {
         int singleJpg = 0;
         int singleDng = 0;
         int stereoHalves = 0;
-        // burst id -> how many distinct halves of it are on disk. A pair is a burst with two.
-        Map<String, Integer> halvesPerBurst = new HashMap<>();
-        Map<String, String> firstTagOfBurst = new HashMap<>();
+        Map<String, java.util.Set<String>> tagsPerBurst = new HashMap<>();
 
         File[] files = mDir.listFiles();
         if (files != null) {
@@ -286,30 +284,41 @@ public final class SessionManifest {
                     String stem = n.substring(0, n.length() - 4);
                     String[] parts = stem.split("_");
                     if (parts.length >= 3) {
+                        // burst id -> the DISTINCT lens tags seen for it. This counted to two
+                        // and stopped, because a simultaneous capture meant a pair. With the
+                        // all-lens shot one burst can carry four frames -- uw, main and a tag
+                        // per extra physical -- and capping at two would report a four-lens
+                        // capture as a pair, hiding a missing lens completely.
                         String burst = parts[1];
                         String tag = parts[2];
-                        String seen = firstTagOfBurst.get(burst);
-                        if (seen == null) {
-                            firstTagOfBurst.put(burst, tag);
-                            halvesPerBurst.put(burst, 1);
-                        } else if (!seen.equals(tag)) {
-                            halvesPerBurst.put(burst, 2);
+                        java.util.Set<String> tags = tagsPerBurst.get(burst);
+                        if (tags == null) {
+                            tags = new java.util.LinkedHashSet<>();
+                            tagsPerBurst.put(burst, tags);
                         }
+                        tags.add(tag);
                     }
                 }
             }
         }
         int complete = 0;
-        for (Integer v : halvesPerBurst.values()) {
-            if (v != null && v >= 2) {
+        int widestBurst = 0;
+        for (java.util.Set<String> tags : tagsPerBurst.values()) {
+            if (tags.size() >= 2) {
                 complete++;
+            }
+            if (tags.size() > widestBurst) {
+                widestBurst = tags.size();
             }
         }
         m.put("stills_jpg", singleJpg);
         m.put("stills_dng", singleDng);
         m.put("stereo_halves", stereoHalves);
-        m.put("stereo_bursts_seen", halvesPerBurst.size());
+        m.put("stereo_bursts_seen", tagsPerBurst.size());
         m.put("stereo_pairs_complete", complete);
+        // The most lenses any one simultaneous capture managed. 2 is the metric pair; more
+        // means the all-lens shot fired and says how many of them actually landed.
+        m.put("lenses_in_widest_capture", widestBurst);
         return m;
     }
 

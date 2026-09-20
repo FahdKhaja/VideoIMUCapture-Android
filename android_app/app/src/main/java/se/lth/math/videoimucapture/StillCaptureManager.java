@@ -91,6 +91,50 @@ public class StillCaptureManager {
         return sPhysMain;
     }
 
+    /** Every physical lens with a stream in the current session, in configuration order. */
+    private static volatile java.util.List<String> sActiveLensIds =
+            java.util.Collections.emptyList();
+
+    /**
+     * Whether the NEXT session configures every physical lens or only the metric pair.
+     *
+     * Set by the proxy from the preference just before the manager is built, because streams
+     * are bound at createCaptureSession and there is no adding one to a live session. Reading
+     * the preference here instead would need a Context this class does not have and would not
+     * change when it takes effect: the camera has to be reopened either way.
+     */
+    private static volatile boolean sAllLensShot = false;
+
+    public static void setAllLensShot(boolean all) {
+        sAllLensShot = all;
+    }
+
+    public static boolean allLensShot() {
+        return sAllLensShot;
+    }
+
+    public static java.util.List<String> activeLensIds() {
+        return sActiveLensIds;
+    }
+
+    /**
+     * What a lens's images are called on disk.
+     *
+     * The metric pair keeps "uw" and "main" so that every reader, grader and parser written
+     * against the archive still works, and the extra lenses are named for their physical id
+     * rather than for a role -- "tele" would be a guess about what the device is, while the
+     * id is what the device said.
+     */
+    static String lensTag(String physicalId) {
+        if (physicalId.equals(sPhysMain)) {
+            return "main";
+        }
+        if (physicalId.equals(sPhysUltrawide)) {
+            return "uw";
+        }
+        return "phys" + physicalId;
+    }
+
     /**
      * Physical streams are constrained: the probe found YUV at 1920x1080 configures
      * alongside preview, JPEG and RAW, while larger did not. At 1920 wide the main
@@ -126,8 +170,23 @@ public class StillCaptureManager {
     private ImageReader mJpegReader;
     private ImageReader mRawReader;
     private boolean mRawSupported;
-    private ImageReader mStereoUwReader;
-    private ImageReader mStereoMainReader;
+    /**
+     * One reader per physical lens configured into the session, keyed by physical id.
+     *
+     * This was a pair of named fields -- an ultrawide reader and a main reader -- because the
+     * only question anyone had asked of two lenses at once was the 18.02 mm baseline. The
+     * device turns out to support far more than that: the probe on this handset configures
+     * 2+5+6+7 together, and preview + JPEG + RAW + four physical streams at 1920x1080 is a
+     * supported combination, seven streams in one session.
+     *
+     * Insertion-ordered, so the physical ids appear in the file in the order they were
+     * configured rather than in whatever order a hash gives.
+     */
+    private final java.util.LinkedHashMap<String, ImageReader> mLensReaders =
+            new java.util.LinkedHashMap<>();
+    /** One arming flag per lens: a one-shot capture keeps exactly one frame from each. */
+    private final java.util.LinkedHashMap<String, java.util.concurrent.atomic.AtomicBoolean>
+            mLensWanted = new java.util.LinkedHashMap<>();
     private boolean mStereoSupported;
     private volatile long mStereoBurstId;
 
@@ -200,19 +259,40 @@ public class StillCaptureManager {
             Log.i(TAG, "no ultrawide+main physical pair; stereo stage disabled");
             return;
         }
+        // WHICH LENSES GET A STREAM. The metric pair always; every other physical too when
+        // the operator has asked for the all-lens shot. This is a SESSION-level decision --
+        // streams are bound at createCaptureSession and cannot be added to a live session --
+        // so changing it takes effect when the camera is next opened, which is why the cells
+        // that use it cycle the camera rather than only writing the preference.
+        //
+        // Configuring all four is not free even when they are not being targeted, which is
+        // why it is off by default. The pair is what every clip in the archive was shot with.
+        boolean allLenses = sAllLensShot;
+        java.util.LinkedHashSet<String> active = new java.util.LinkedHashSet<>();
+        active.add(sPhysMain);
+        active.add(sPhysUltrawide);
+        if (allLenses) {
+            for (String id : physicals) {
+                active.add(id);
+            }
+        }
+        sActiveLensIds = new java.util.ArrayList<>(active);
+
         // Depth 4, not 2. In periodic mode (ReconStab #36) both readers receive every frame of
         // the recording and are drained on the camera handler; if that thread is held for two
         // frame periods -- a metadata queue stall, a burst of results -- a depth-2 reader fills,
         // and a full physical stream stalls the request pipeline it shares with the VIDEO.
-        mStereoUwReader = ImageReader.newInstance(STEREO_SIZE.getWidth(),
-                STEREO_SIZE.getHeight(), ImageFormat.YUV_420_888, STEREO_READER_DEPTH);
-        mStereoUwReader.setOnImageAvailableListener(
-                r -> onStereoImage(r, sPhysUltrawide, "uw"), mHandler);
-        mStereoMainReader = ImageReader.newInstance(STEREO_SIZE.getWidth(),
-                STEREO_SIZE.getHeight(), ImageFormat.YUV_420_888, STEREO_READER_DEPTH);
-        mStereoMainReader.setOnImageAvailableListener(
-                r -> onStereoImage(r, sPhysMain, "main"), mHandler);
+        for (String id : sActiveLensIds) {
+            final String tag = lensTag(id);
+            ImageReader reader = ImageReader.newInstance(STEREO_SIZE.getWidth(),
+                    STEREO_SIZE.getHeight(), ImageFormat.YUV_420_888, STEREO_READER_DEPTH);
+            reader.setOnImageAvailableListener(r -> onStereoImage(r, id, tag), mHandler);
+            mLensReaders.put(id, reader);
+            mLensWanted.put(id, new java.util.concurrent.atomic.AtomicBoolean(false));
+        }
         mStereoSupported = true;
+        Log.i(TAG, "lens streams configured: " + sActiveLensIds
+                + (allLenses ? " (all-lens shot)" : " (metric pair)"));
         Integer sync = Build.VERSION.SDK_INT >= 28
                 ? mCharacteristics.get(CameraCharacteristics.LOGICAL_MULTI_CAMERA_SENSOR_SYNC_TYPE)
                 : null;
@@ -263,12 +343,47 @@ public class StillCaptureManager {
                         + translation[1] * translation[1] + translation[2] * translation[2]);
                 focals.put(id, focalLengths[0]);
                 offsets.put(id, offset);
-                if (offset < referenceOffset) {
-                    referenceOffset = offset;
-                    reference = id;
-                }
             } catch (CameraAccessException | IllegalArgumentException e) {
                 Log.w(TAG, "could not read physical camera " + id + ": " + e);
+            }
+        }
+
+        // THE ORIGIN IS NOT UNIQUE, which the first version of this method assumed.
+        //
+        // Measured on the SM-S928U 2026-09-20: logical camera 0 wraps physicals {2, 5, 6, 7},
+        // and THREE of them -- 5, 6 and 7 -- report LENS_POSE_TRANSLATION [0, 0, 0]. Only the
+        // ultrawide, id 2, publishes an offset at all ([0, 0.01802, 0]). So "the lens at the
+        // origin is the reference" does not identify one lens; it identifies three, and
+        // getPhysicalCameraIds() returns a Set, whose iteration order is not specified. The
+        // main camera was being chosen by whichever zero the set happened to yield first.
+        //
+        // Picking 6 or 7 would not have failed loudly. It would have paired the ultrawide
+        // with a telephoto, called the result a stereo pair, and left every downstream reader
+        // applying an 18.02 mm baseline to two lenses whose true separation is unpublished --
+        // the metric anchor anchoring to nothing.
+        //
+        // The tie is broken on focal length instead, and the LOGICAL camera settles it: its
+        // own reported focal IS the reference lens's, because the logical camera's default
+        // field of view is that lens's field of view. On this device the logical camera says
+        // 6.3 mm, which is id 5 exactly, against 7.9 and 18.6 for the telephotos.
+        float logicalFocal = 0f;
+        float[] logicalFocals =
+                mCharacteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+        if (logicalFocals != null && logicalFocals.length > 0) {
+            logicalFocal = logicalFocals[0];
+        }
+        double bestFocalGap = Double.MAX_VALUE;
+        for (java.util.Map.Entry<String, Double> e : offsets.entrySet()) {
+            double offset = e.getValue();
+            if (offset > referenceOffset) {
+                continue;
+            }
+            double focalGap = logicalFocal > 0
+                    ? Math.abs(focals.get(e.getKey()) - logicalFocal) : 0;
+            if (offset < referenceOffset || focalGap < bestFocalGap) {
+                referenceOffset = offset;
+                bestFocalGap = focalGap;
+                reference = e.getKey();
             }
         }
         for (java.util.Map.Entry<String, Float> e : focals.entrySet()) {
@@ -290,9 +405,11 @@ public class StillCaptureManager {
         sPhysUltrawide = widest;
         Log.i(TAG, String.format(java.util.Locale.US,
                 "lens roles derived: main=%s (focal %.2f mm, offset %.2f mm), "
-                        + "ultrawide=%s (focal %.2f mm, offset %.2f mm)%s",
+                        + "ultrawide=%s (focal %.2f mm, offset %.2f mm), "
+                        + "logical focal %.2f mm, candidates %s%s",
                 reference, focals.get(reference), offsets.get(reference) * 1000.0,
                 widest, focals.get(widest), offsets.get(widest) * 1000.0,
+                logicalFocal, focals.keySet(),
                 changed ? "  -- DIFFERENT from the hardcoded pair" : ""));
     }
 
@@ -300,12 +417,34 @@ public class StillCaptureManager {
         return mStereoSupported;
     }
 
-    /** Surfaces that must be bound to a physical id in the session configuration. */
+    /** Every physical surface to bind at session configuration: one per configured lens. */
     public java.util.Map<String, android.view.Surface> getStereoSurfaces() {
         java.util.LinkedHashMap<String, android.view.Surface> out = new java.util.LinkedHashMap<>();
         if (mStereoSupported) {
-            out.put(sPhysUltrawide, mStereoUwReader.getSurface());
-            out.put(sPhysMain, mStereoMainReader.getSurface());
+            for (java.util.Map.Entry<String, ImageReader> e : mLensReaders.entrySet()) {
+                out.put(e.getKey(), e.getValue().getSurface());
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Just the two lenses with a published baseline.
+     *
+     * The periodic stream (#36) and the anchoring pair want THESE and not whatever else the
+     * session happens to have configured: a pair is a measurement because its separation is
+     * known, and adding a telephoto whose offset the device will not state turns one metric
+     * pair into three pictures, two of which cannot contribute scale.
+     */
+    public java.util.Map<String, android.view.Surface> getMetricPairSurfaces() {
+        java.util.LinkedHashMap<String, android.view.Surface> out = new java.util.LinkedHashMap<>();
+        if (mStereoSupported) {
+            for (String id : new String[]{sPhysUltrawide, sPhysMain}) {
+                ImageReader r = mLensReaders.get(id);
+                if (r != null) {
+                    out.put(id, r.getSurface());
+                }
+            }
         }
         return out;
     }
@@ -399,8 +538,9 @@ public class StillCaptureManager {
         mPeriodicPending.clear();
         mPeriodicResults.clear();
         // Any OBJECT arm left over must not steal the first periodic frame.
-        mStereoWantUw.set(false);
-        mStereoWantMain.set(false);
+        for (java.util.concurrent.atomic.AtomicBoolean want : mLensWanted.values()) {
+            want.set(false);
+        }
         mPeriodicActive = true;
         Log.i(TAG, String.format(java.util.Locale.US,
                 "periodic stereo pairs every %.1f s into %s", mPeriodicIntervalNs / 1e9,
@@ -556,9 +696,12 @@ public class StillCaptureManager {
         mRecordingWriter = writer;
         mStereoBurstId = SystemClock.elapsedRealtimeNanos();
         // Arm exactly one frame per lens; every other warm-up frame is drained and
-        // discarded.
-        mStereoWantUw.set(true);
-        mStereoWantMain.set(true);
+        // discarded. Every CONFIGURED lens fires: with the metric pair configured this is the
+        // 18.02 mm pair as before, and with the all-lens set it is one simultaneous frame from
+        // every rear camera the device has.
+        for (java.util.concurrent.atomic.AtomicBoolean want : mLensWanted.values()) {
+            want.set(true);
+        }
         try {
             // The builder must be created FOR the physical cameras it will address.
             // setPhysicalCameraKey validates its id against the set the builder was made
@@ -571,19 +714,19 @@ public class StillCaptureManager {
             // tested, and the "still cropped" measurement was of the wrong frames.
             CaptureRequest.Builder b;
             if (Build.VERSION.SDK_INT >= 28) {
-                java.util.Set<String> ids = new java.util.HashSet<>(
-                        java.util.Arrays.asList(sPhysUltrawide, sPhysMain));
-                b = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE, ids);
+                b = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE,
+                        new java.util.HashSet<>(mLensReaders.keySet()));
             } else {
                 b = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
             }
             copyBase(baseRequest, b, false);
             applyFullFieldOfView(b);
-            b.addTarget(mStereoUwReader.getSurface());
-            b.addTarget(mStereoMainReader.getSurface());
+            for (ImageReader r : mLensReaders.values()) {
+                b.addTarget(r.getSurface());
+            }
             session.capture(b.build(), mStereoCallback, mHandler);
-            Log.i(TAG, "stereo pair requested (physical " + sPhysUltrawide
-                    + " + " + sPhysMain + ")");
+            Log.i(TAG, "simultaneous lens capture requested: physical "
+                    + mLensReaders.keySet());
         } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
             Log.e(TAG, "stereo capture failed: " + e);
         }
@@ -601,18 +744,16 @@ public class StillCaptureManager {
                     // this callback, the same race that broke DNG writing. The
                     // filenames are deterministic from the burst id, so nothing has to
                     // wait for the pixels.
-                    writeStereoMeta(result, sPhysUltrawide, "uw", 0);
-                    writeStereoMeta(result, sPhysMain, "main", 1);
+                    int index = 0;
+                    for (String id : mLensReaders.keySet()) {
+                        writeStereoMeta(result, id, lensTag(id), index++);
+                    }
                 }
             };
 
     private volatile long mStereoResultTimeNs;
     private volatile long mStereoExposureNs;
     private volatile int mStereoIso;
-    private final java.util.concurrent.atomic.AtomicBoolean mStereoWantUw =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
-    private final java.util.concurrent.atomic.AtomicBoolean mStereoWantMain =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
 
     private void onStereoImage(ImageReader reader, String physicalId, String tag) {
         final byte[] nv21;
@@ -641,10 +782,8 @@ public class StillCaptureManager {
                 burstId = mPeriodicBurstId;
             } else {
                 periodic = false;
-                boolean armed = sPhysUltrawide.equals(physicalId)
-                        ? mStereoWantUw.compareAndSet(true, false)
-                        : mStereoWantMain.compareAndSet(true, false);
-                if (!armed) {
+                java.util.concurrent.atomic.AtomicBoolean want = mLensWanted.get(physicalId);
+                if (want == null || !want.compareAndSet(true, false)) {
                     return;
                 }
                 burstId = mStereoBurstId;
@@ -991,14 +1130,11 @@ public class StillCaptureManager {
             mRawReader.close();
             mRawReader = null;
         }
-        if (mStereoUwReader != null) {
-            mStereoUwReader.close();
-            mStereoUwReader = null;
+        for (ImageReader r : mLensReaders.values()) {
+            r.close();
         }
-        if (mStereoMainReader != null) {
-            mStereoMainReader.close();
-            mStereoMainReader = null;
-        }
+        mLensReaders.clear();
+        mLensWanted.clear();
         mStereoSupported = false;
     }
 

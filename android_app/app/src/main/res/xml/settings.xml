@@ -38,6 +38,15 @@
             app:persistent="false"
             app:summary="Lets the HAL un-warp the frames before you get them. Leave OFF. The distortion_params (k1..k5) recorded in every session describe the RAW sensor, so a solve that trusts them on corrected frames corrects twice — and a HAL correction is a warp with no published functional form, which no PINHOLE or OPENCV camera in COLMAP can express. Both failure modes look like a slightly-worse-than-expected reprojection error, which is the signature this project has learned not to trust. The mode that actually ran is recorded per frame." />
 
+        <ListPreference
+            app:key="lens_set"
+            app:title="Lenses in the session"
+            app:persistent="true"
+            app:defaultValue="pair"
+            app:entries="@array/lens_set_desc"
+            app:entryValues="@array/lens_set_values"
+            app:summary="Which physical rear cameras get a stream. &quot;Metric pair&quot; is main + ultrawide, the two with a published 18.02 mm baseline, and is how every clip in the archive was shot. &quot;All lenses&quot; adds the 3x and 5x telephotos, so one press captures the same instant from every rear camera — this device configures preview + JPEG + RAW + four physical streams at 1920x1080, seven streams in one session. The telephotos publish no pose translation, so the extra views carry no scale of their own. Takes effect when the camera is next opened." />
+
         <SwitchPreferenceCompat
             app:key="focus_hyperfocal"
             app:title="Focus at hyperfocal (manual focus only)"

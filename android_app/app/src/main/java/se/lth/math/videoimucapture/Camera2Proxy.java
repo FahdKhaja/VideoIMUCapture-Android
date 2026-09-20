@@ -400,7 +400,12 @@ public class Camera2Proxy {
                     CameraDevice.TEMPLATE_RECORD, StillCaptureManager.stereoPhysicalIds());
             copyAllKeys(mPreviewRequestBuilder.build(), b);
             b.addTarget(mPreviewSurface);
-            for (Surface s : mStillCaptureManager.getStereoSurfaces().values()) {
+            // The METRIC pair, not every lens the session happens to have configured. The
+            // periodic stream exists to put a known 18.02 mm ruler in the clip; adding a
+            // telephoto whose offset the device will not publish would put two more streams
+            // in the recording's own repeating request for the whole walk and contribute no
+            // scale for the cost.
+            for (Surface s : mStillCaptureManager.getMetricPairSurfaces().values()) {
                 b.addTarget(s);
             }
             mStillCaptureManager.applyPhysicalFullArrays(b);
@@ -982,6 +987,8 @@ public class Camera2Proxy {
             // Stills share the preview session: the JPEG (and RAW) readers must be declared
             // as outputs at configuration time, even though they only receive frames when a
             // burst is fired.
+            StillCaptureManager.setAllLensShot("all".equals(androidx.preference.PreferenceManager
+                    .getDefaultSharedPreferences(mActivity).getString("lens_set", "pair")));
             mStillCaptureManager =
                     new StillCaptureManager(mCameraCharacteristics, mCameraManager,
                             mBackgroundHandler,

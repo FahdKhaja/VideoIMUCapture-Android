@@ -305,6 +305,34 @@ public final class TestPlan {
                 30, prefs("focus_mode", "MANUAL", "focus_hyperfocal", true,
                         "lock_radiometry", true, "ois", false, "ois_data", false)));
 
+        // L1: one instant, every rear lens.
+        //
+        // The probe on this handset says 2+5+6+7 configure together, and that preview + JPEG +
+        // RAW + four physical streams at 1920x1080 is a supported combination -- seven streams
+        // in one session. Until now the app only ever asked for two of them, because the only
+        // question anyone had put to two lenses at once was the 18.02 mm baseline.
+        //
+        // What the extra two are NOT is more scale. Ids 6 and 7 report LENS_POSE_TRANSLATION
+        // [0, 0, 0], so the device declines to say where they sit; only 2 and 5 have a
+        // published separation. What they are is the same instant at 7.9 mm and 18.6 mm
+        // beside it, which is a different thing to have and worth having on purpose.
+        //
+        // THE LENS SET IS A SESSION SETTING. Streams are bound when the capture session is
+        // created and there is no adding one to a live session, so this cell cannot set it
+        // the way the others set theirs -- it has to be in place before the camera opens.
+        out.add(new Step("L1", "L1 - every rear lens, one instant",
+                "SET THIS FIRST: Settings > Lenses in the session > All rear lenses, then "
+                        + "leave the app and come back so the camera reopens. The cell cannot "
+                        + "do it for you: the streams are fixed when the session is built.\n\n"
+                        + "Then put the phone on something steady, pointed at a scene with "
+                        + "detail at several distances, and do not touch it.\n\nPASS = four "
+                        + "stereo_ files sharing one burst id — uw, main, phys6, phys7 — and "
+                        + "lenses_in_widest_capture = 4 in the manifest. Fewer means a lens "
+                        + "was configured and did not deliver, which is the finding.",
+                20, prefs("stereo_interval_s", 0, "lock_radiometry", true,
+                        "blur_budget_manual", false),
+                Streams.STILLS, CaptureModeManager.Mode.WALK));
+
         // I1/I2 (ReconStab #63): what does batching the IMU cost, and what does it buy?
         //
         // Every listener used the three-argument registerListener until 2026-09-20, so the

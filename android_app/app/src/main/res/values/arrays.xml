@@ -1,4 +1,12 @@
 <resources>
+    <string-array name="lens_set_desc">
+        <item>Metric pair (main + ultrawide)</item>
+        <item>All rear lenses</item>
+    </string-array>
+    <string-array name="lens_set_values">
+        <item>pair</item>
+        <item>all</item>
+    </string-array>
     <string-array name="focus_mode_desc">
         <item>Continuous</item>
         <item>Fix on Touch</item>
