@@ -56,6 +56,10 @@ public class VideoEncoderCore {
     private MediaCodec.BufferInfo mBufferInfo;
     private int mTrackIndex;
     private boolean mMuxerStarted;
+    // Whether stop() actually laid the moov atom down, and whether any sample write failed.
+    // Together these are the difference between an mp4 that plays and one that merely exists.
+    private boolean mTrailerWritten = false;
+    private boolean mWriteFailed = false;
     private RecordingWriter mFrameMetadataRecorder = null;
     private long mFrameNbr = 0;
 
@@ -124,12 +128,29 @@ public class VideoEncoderCore {
 
     /**
      * Releases encoder resources.
+     *
+     * THE TRAILER IS THE FILE. MediaMuxer.stop() is what writes the moov atom, and an mp4
+     * without one is not a damaged recording, it is an unplayable one -- every frame is on
+     * disk and nothing can read them. So a throw from stop() is the single most expensive
+     * failure in this class, and it used to propagate: release() was never called after it,
+     * which leaked the native muxer as well, and the caller on the encoder thread died.
+     *
+     * Now each teardown step stands alone, release() always runs, and whether the trailer
+     * was actually written is recorded rather than assumed -- see {@link #isFileComplete()}.
      */
     public void release() {
         if (VERBOSE) Log.d(TAG, "releasing encoder objects");
         if (mEncoder != null) {
-            mEncoder.stop();
-            mEncoder.release();
+            try {
+                mEncoder.stop();
+            } catch (IllegalStateException e) {
+                Log.e(TAG, "encoder would not stop: " + e);
+            }
+            try {
+                mEncoder.release();
+            } catch (RuntimeException e) {
+                Log.e(TAG, "encoder would not release: " + e);
+            }
             mEncoder = null;
         }
         if (mMuxer != null) {
@@ -137,12 +158,38 @@ public class VideoEncoderCore {
             //       of frames submitted, and don't call stop() if we haven't written anything.
             if (mFrameNbr > 0) {
                 if (VERBOSE) Log.d(TAG, "Stopping Muxer since we have written " + mFrameNbr + " frames");
-                mMuxer.stop();
+                try {
+                    mMuxer.stop();
+                    mTrailerWritten = true;
+                } catch (RuntimeException e) {
+                    // A full card is the way this happens. Say so as loudly as the log allows:
+                    // the frames are on disk and the index that makes them readable is not.
+                    Log.e(TAG, "MUXER DID NOT STOP -- the mp4 has no trailer and will not play: "
+                            + e);
+                }
+            } else {
+                Log.w(TAG, "no frames were written; the mp4 is empty");
+            }
+            try {
                 mMuxer.release();
+            } catch (RuntimeException e) {
+                Log.e(TAG, "muxer would not release: " + e);
             }
             mMuxer = null;
         }
+    }
 
+    /**
+     * Whether this recording ended with a readable file: frames written AND the trailer laid
+     * down. False means the mp4 on disk cannot be opened, whatever its size says.
+     */
+    public boolean isFileComplete() {
+        return mFrameNbr > 0 && mTrailerWritten && !mWriteFailed;
+    }
+
+    /** Frames handed to the muxer, for the receipt. */
+    public long framesWritten() {
+        return mFrameNbr;
     }
 
     /**
@@ -215,8 +262,23 @@ public class VideoEncoderCore {
                     // adjust the ByteBuffer values to match BufferInfo (not needed?)
                     encodedData.position(mBufferInfo.offset);
                     encodedData.limit(mBufferInfo.offset + mBufferInfo.size);
-                    mMuxer.writeSampleData(mTrackIndex, encodedData, mBufferInfo);
-                    writeMetadata(mFrameNbr++, mBufferInfo.presentationTimeUs);
+                    // A sample that cannot be written must not take the encoder thread with
+                    // it. This runs on TextureMovieEncoder's own thread, where an uncaught
+                    // throw reaches the default handler and kills the process -- losing not
+                    // just this clip but the trailer that would have made it readable. A full
+                    // card is the ordinary way to get here, so the first failure is recorded
+                    // and further writes are skipped: the frames already down stay down, and
+                    // the stop path still gets its chance to write the trailer over them.
+                    if (!mWriteFailed) {
+                        try {
+                            mMuxer.writeSampleData(mTrackIndex, encodedData, mBufferInfo);
+                            writeMetadata(mFrameNbr++, mBufferInfo.presentationTimeUs);
+                        } catch (IllegalStateException | IllegalArgumentException e) {
+                            mWriteFailed = true;
+                            Log.e(TAG, "muxer write failed after " + mFrameNbr
+                                    + " frames; no further samples will be written: " + e);
+                        }
+                    }
                     if (VERBOSE) {
                         Log.d(TAG, "sent " + mBufferInfo.size + " bytes to muxer, ts=" +
                                 mBufferInfo.presentationTimeUs);

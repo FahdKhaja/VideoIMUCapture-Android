@@ -76,6 +76,30 @@ public class TextureMovieEncoder implements Runnable {
     private int mFrameNum;
     private VideoEncoderCore mVideoEncoder;
 
+    // The verdict on the clip that just ended, read from the main thread when the session is
+    // sealed. Static because the encoder itself is a static that survives activity restarts,
+    // and volatile because it is written on the encoder thread and read on the main one.
+    //
+    // Boolean rather than boolean: null means no video was recorded in this session at all,
+    // which is a different statement from "the video failed" and must not be reported as one.
+    private static volatile Boolean sLastFileComplete = null;
+    private static volatile long sLastFramesWritten = 0;
+
+    /** Whether the last clip ended as a readable mp4; null when no clip was recorded. */
+    public static Boolean lastFileComplete() {
+        return sLastFileComplete;
+    }
+
+    public static long lastFramesWritten() {
+        return sLastFramesWritten;
+    }
+
+    /** Forget the previous verdict, so a new session cannot inherit the last one's. */
+    public static void clearLastFileVerdict() {
+        sLastFileComplete = null;
+        sLastFramesWritten = 0;
+    }
+
     // ----- accessed by multiple threads -----
     private volatile EncoderHandler mHandler;
 
@@ -418,7 +442,15 @@ public class TextureMovieEncoder implements Runnable {
     }
 
     private void releaseEncoder() {
+        // Ask BEFORE releasing: the answer is about the file this recording produced, and
+        // release() is where the trailer is written, so the flags are only final afterwards.
         mVideoEncoder.release();
+        sLastFileComplete = mVideoEncoder.isFileComplete();
+        sLastFramesWritten = mVideoEncoder.framesWritten();
+        if (!sLastFileComplete) {
+            Log.e(TAG, "the clip just ended is NOT a readable mp4 ("
+                    + sLastFramesWritten + " frames written)");
+        }
         if (mInputWindowSurface != null) {
             mInputWindowSurface.release();
             mInputWindowSurface = null;

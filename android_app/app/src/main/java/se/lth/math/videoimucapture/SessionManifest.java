@@ -55,6 +55,7 @@ public final class SessionManifest {
     private int mStereoPairsArmed = 0;
     private long mFreeAtStartBytes = -1;
     private boolean mStoppedForSpace = false;
+    private Boolean mVideoFileComplete = null;
 
     public SessionManifest(android.content.Context context, File dir, String mode,
                            String testTag) {
@@ -104,6 +105,17 @@ public final class SessionManifest {
     /** Free bytes when the session opened, so a short session can explain itself. */
     public void noteFreeAtStart(long bytes) {
         mFreeAtStartBytes = bytes;
+    }
+
+    /**
+     * Whether the encoder finished the mp4 properly. Null when no video was recorded.
+     *
+     * A file whose trailer was never written has every frame on disk and no index, so it is
+     * the right size, it is in the right place, and nothing will open it. Length alone --
+     * which is all {@link #measure()} can see -- reports that file as a healthy video.
+     */
+    public void noteVideoFileComplete(Boolean complete) {
+        mVideoFileComplete = complete;
     }
 
     /**
@@ -183,6 +195,18 @@ public final class SessionManifest {
         boolean hasVideo = video.isFile() && video.length() > 0;
         m.put("video", hasVideo);
         m.put("video_bytes", hasVideo ? video.length() : 0);
+
+        // Length says a file is there; only the encoder knows whether it can be opened. A
+        // recording whose trailer was never written is exactly the right size and completely
+        // unreadable, so it is reported as NOT video -- because for every purpose downstream
+        // it is not.
+        if (mVideoFileComplete != null) {
+            m.put("video_file_complete", mVideoFileComplete);
+            if (hasVideo && !mVideoFileComplete) {
+                m.put("video", false);
+                m.put("video_unplayable_bytes", video.length());
+            }
+        }
 
         File pb3 = new File(mDir, "video_meta.pb3");
         m.put("meta_bytes", pb3.isFile() ? pb3.length() : 0);
@@ -271,7 +295,9 @@ public final class SessionManifest {
         sb.append(pairs > 0
                 ? ", " + pairs + " stereo pairs (metric scale)"
                 : ", no stereo pair (NO METRIC SCALE)");
-        if (mVideoRequested && !hasVideo) {
+        if (measured.optLong("video_unplayable_bytes", 0) > 0) {
+            sb.append(" — the mp4 HAS NO TRAILER AND WILL NOT PLAY");
+        } else if (mVideoRequested && !hasVideo) {
             sb.append(" — video was started and left no file");
         }
         if (frames != null && !frames.isComplete()) {

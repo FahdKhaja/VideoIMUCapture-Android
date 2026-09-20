@@ -170,6 +170,12 @@ public final class SessionSummary {
             if (expected == null || measured == null) {
                 return "the session did not get what it asked for";
             }
+            // A file with no trailer is the right size and will not open, so it has to be
+            // told apart from a session that produced no file at all -- the operator can see
+            // an mp4 sitting there, and "no video arrived" would read as the app being wrong.
+            if (measured.optLong("video_unplayable_bytes", 0) > 0) {
+                return "THE MP4 HAS NO TRAILER AND WILL NOT PLAY";
+            }
             if (expected.optBoolean("video") && !measured.optBoolean("video")) {
                 return "RECORD WAS PRESSED AND NO VIDEO ARRIVED";
             }

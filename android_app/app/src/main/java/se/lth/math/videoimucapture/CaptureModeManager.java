@@ -209,6 +209,9 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         mManifest = new SessionManifest(mActivity, dir, mMode.name(), mTestTag);
         mManifest.noteFreeAtStart(StorageGuard.freeBytes(new File(mActivity.getResultRoot())));
         mManifest.noteVideoRequested();
+        // A verdict left over from the previous clip would be reported against this one, and
+        // "the last recording was fine" is not a statement about this recording.
+        TextureMovieEncoder.clearLastFileVerdict();
         Camera2Proxy proxy = mActivity.getmCamera2Proxy();
         mVideoLockedRadiometry = androidx.preference.PreferenceManager
                 .getDefaultSharedPreferences(mActivity).getBoolean("lock_radiometry", true);
@@ -279,8 +282,14 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         }
         manifest.noteStillsFired(mShots);
         final RecordingWriter writer = mActivity.getsRecordingWriter();
-        mMain.postDelayed(() -> manifest.write(writer == null ? null : writer.accounting()),
-                1200L);
+        // The same delay that lets the mp4 finalise is what makes the encoder's verdict
+        // available: the trailer is written during release(), on the encoder thread, after the
+        // record button comes up. Reading it before then would report a file that is still
+        // being closed.
+        mMain.postDelayed(() -> {
+            manifest.noteVideoFileComplete(TextureMovieEncoder.lastFileComplete());
+            manifest.write(writer == null ? null : writer.accounting());
+        }, 1200L);
     }
 
     /** True when the video recording, not a stills run, is holding the session open. */
