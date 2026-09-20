@@ -64,6 +64,8 @@ public final class SessionManifest {
     private int mBatteryAtEnd = -1;
     private String mLensSet = null;
     private int mLensesConfigured = -1;
+    private int mCameraError = -1;
+    private long mCameraErrorAtMs = -1;
 
     public SessionManifest(android.content.Context context, File dir, String mode,
                            String testTag) {
@@ -182,6 +184,23 @@ public final class SessionManifest {
         mStoppedForBattery = true;
     }
 
+    /**
+     * The camera device itself failed during the session.
+     *
+     * On 2026-09-20 the vendor HAL raised CAMERA_ERROR (3) on the first frame of a four-lens
+     * warm-up, two seconds into a twenty-second run. The proxy released the device, nothing
+     * told the session, the trigger kept deciding shots at a camera that no longer existed,
+     * and the receipt could only say that stills were missing -- not that there had been
+     * nothing left to take them with. The error code and the moment are the two facts that
+     * turn "some pictures are missing" into a diagnosis.
+     */
+    public void noteCameraError(int error) {
+        if (mCameraError < 0) {
+            mCameraError = error;
+            mCameraErrorAtMs = System.currentTimeMillis();
+        }
+    }
+
     public void noteBatteryAtStart(int percent) {
         mBatteryAtStart = percent;
     }
@@ -266,6 +285,16 @@ public final class SessionManifest {
             }
             battery.put("stopped_for_battery", mStoppedForBattery);
             root.put("battery", battery);
+
+            // Only when it happened. A receipt that always carried "camera_error": -1 would
+            // teach the reader to skip the field, and this one is worth reading every time.
+            if (mCameraError >= 0) {
+                JSONObject cam = new JSONObject();
+                cam.put("code", mCameraError);
+                cam.put("at_s", Double.parseDouble(String.format(Locale.US, "%.1f",
+                        (mCameraErrorAtMs - mStartedWallMs) / 1000.0)));
+                root.put("camera_error", cam);
+            }
 
             root.put("agrees", agrees(measured));
             root.put("summary", summary(measured, frames));
@@ -381,6 +410,10 @@ public final class SessionManifest {
      * finding L1 exists to produce.
      */
     private boolean agrees(JSONObject measured) {
+        if (mCameraError >= 0) {
+            // Whatever landed before the device died, the session did not do what was asked.
+            return false;
+        }
         if (mVideoRequested != measured.optBoolean("video", false)) {
             return false;
         }
@@ -454,6 +487,12 @@ public final class SessionManifest {
         }
         if (frames != null && !frames.isComplete()) {
             sb.append(" — ").append(frames.totalDropped()).append(" frame records lost");
+        }
+        if (mCameraError >= 0) {
+            sb.append(" — CAMERA DIED (error ").append(mCameraError).append(") at ")
+                    .append(String.format(Locale.US, "%.1f",
+                            (mCameraErrorAtMs - mStartedWallMs) / 1000.0))
+                    .append(" s");
         }
         if (mStoppedForSpace) {
             sb.append(" — ENDED EARLY: the card ran out");

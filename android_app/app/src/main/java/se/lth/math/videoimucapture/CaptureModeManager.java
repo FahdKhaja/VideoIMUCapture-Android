@@ -278,6 +278,16 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         }
     }
 
+    /**
+     * The camera device died under the session. Recorded, not acted on: the activity owns
+     * the decision to stop everything, the same way it does for space, heat and charge.
+     */
+    public void noteCameraError(int error) {
+        if (mManifest != null) {
+            mManifest.noteCameraError(error);
+        }
+    }
+
     /** ...and for charge. */
     public void noteStoppedForBattery() {
         if (mManifest != null) {
@@ -557,8 +567,14 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
 
     private void captureNow(StillCaptureManager.Mode burstMode, int shots, boolean raw,
                             float predictedBlurPx, float omega, boolean forced) {
+        // Counted when ASKED, not when the request is issued. The trigger decided six shots
+        // on 2026-09-20 with the camera dead from the second second; four of them fell out
+        // here and the receipt said two were fired and one landed. Six asked, one landed is
+        // the truth, and the receipt's shortfall is only honest if it counts the asking.
+        mShots += shots;
         Camera2Proxy proxy = mActivity.getmCamera2Proxy();
         if (proxy == null || proxy.getStillCaptureManager() == null) {
+            Log.w(TAG, "shot asked for with no camera to take it");
             return;
         }
         StillCaptureManager.CaptureMode cm =
@@ -569,7 +585,6 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // of magnitude between sun and shade, and a stale value is the wrong budget.
         proxy.refreshTriggerOptics(mTrigger);
         proxy.captureStills(burstMode, shots, 2.0f, raw, mRunDir, mWriter);
-        mShots += shots;
     }
 
     // ------------------------------------------------------------------- object mode

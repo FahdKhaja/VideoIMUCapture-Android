@@ -100,8 +100,18 @@ public class Camera2Proxy {
 
         @Override
         public void onError(@NonNull CameraDevice camera, int error) {
-            Log.e(TAG, "Camera Open failed, error: " + error);
+            // Not only at open: this fires whenever the device fails, including mid-session.
+            // 2026-09-20: ERROR_CAMERA_DEVICE (3) on the first frame of a four-lens warm-up,
+            // two seconds into a twenty-second run.
+            Log.e(TAG, "camera device error " + error + " (1 in use, 2 max in use, "
+                    + "3 device, 4 disabled, 5 service)");
             releaseCamera();
+            final DeviceErrorListener l = mDeviceErrorListener;
+            if (l != null) {
+                // Background handler here; the session is driven from main.
+                new android.os.Handler(android.os.Looper.getMainLooper())
+                        .post(() -> l.onCameraDeviceError(error));
+            }
         }
     };
 
@@ -1004,6 +1014,27 @@ public class Camera2Proxy {
 
     /** How long {@link #reconfigureLensStreams} needs before the session is usable again. */
     public static final long SESSION_REBUILD_MS = 1200L;
+
+    /**
+     * Told when the camera DEVICE fails, as opposed to a request failing.
+     *
+     * Until 2026-09-20 onError released the camera and told nobody. The session it had been
+     * serving kept running: the stillness trigger went on deciding shots, each one fell out
+     * of captureNow with no camera to take it, and the run ended on its timer twenty seconds
+     * later with a receipt that could count the missing stills and could not say why. The
+     * error is a fact about the session and belongs in its receipt, and the activity that
+     * owns the session is the one to stop it -- exactly as it does for space, heat and
+     * charge.
+     */
+    public interface DeviceErrorListener {
+        void onCameraDeviceError(int error);
+    }
+
+    private DeviceErrorListener mDeviceErrorListener;
+
+    public void setDeviceErrorListener(DeviceErrorListener l) {
+        mDeviceErrorListener = l;
+    }
 
     private void initPreviewRequest() {
         try {

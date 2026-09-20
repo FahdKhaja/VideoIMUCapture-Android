@@ -308,6 +308,45 @@ public class SessionManifestTest {
         assertTrue(root.getString("summary").contains("NOTHING CAPTURED"));
     }
 
+    /**
+     * The camera device died two seconds in.
+     *
+     * 2026-09-20, L1 on v0.20: the HAL refused a four-lens request on its first frame,
+     * raised ERROR_CAMERA_DEVICE (3), and the run went on for eighteen more seconds with
+     * nothing to take pictures with. The receipt counted the missing stills and could not say
+     * why. The error code and the moment are what make it a diagnosis.
+     */
+    @Test
+    public void aCameraDeathIsNamedAndDisagrees() throws Exception {
+        File dir = mFolder.newFolder("walk_2026_09_20_18_16_18");
+        touch(dir, "still_1_00.jpg", 16);
+        SessionManifest m = manifest(dir, "WALK");
+        m.noteStillsRequested();
+        m.noteStillsFired(1);            // everything asked for landed...
+        m.noteCameraError(3);            // ...and the device still died
+        m.write(null);
+
+        JSONObject root = read(dir);
+        assertFalse("a session whose camera died did not do what was asked",
+                root.getBoolean("agrees"));
+        assertEquals(3, root.getJSONObject("camera_error").getInt("code"));
+        assertTrue(root.getJSONObject("camera_error").has("at_s"));
+        assertTrue(root.getString("summary"),
+                root.getString("summary").contains("CAMERA DIED (error 3)"));
+    }
+
+    @Test
+    public void aHealthySessionCarriesNoCameraErrorField() throws Exception {
+        // Absent rather than -1: a field that is always there teaches the reader to skip it.
+        File dir = mFolder.newFolder("walk_healthy");
+        touch(dir, "still_1_00.jpg", 16);
+        SessionManifest m = manifest(dir, "WALK");
+        m.noteStillsRequested();
+        m.noteStillsFired(1);
+        m.write(null);
+        assertFalse(read(dir).has("camera_error"));
+    }
+
     @Test
     public void anUnwritableDirectoryDoesNotThrow() {
         // A session that has just been shot must not be lost because its receipt could not be

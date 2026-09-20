@@ -613,6 +613,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
         Log.d(TAG, "acquiring camera");
         if (mCamera2Proxy == null) {
             mCamera2Proxy = new Camera2Proxy(this, mCameraSettingsManager);
+            mCamera2Proxy.setDeviceErrorListener(this::onCameraDeviceError);
             Size previewSize =
                     mCamera2Proxy.configureCamera();
             mCameraCaptureFragment.setLayoutAspectRatio(previewSize);
@@ -767,6 +768,38 @@ public class CameraCaptureActivity extends AppCompatActivity {
         if (mCaptureModeManager != null && mCaptureModeManager.isRunning()) {
             mCaptureModeManager.onCaptureButton();
         }
+    }
+
+    /**
+     * The camera device failed under a live session.
+     *
+     * Same shape as space, heat and charge: note the reason first, because stopping is what
+     * seals the receipt and the receipt has to carry it; then stop everything, because a
+     * session with no camera can only accumulate missing pictures. Before this, 2026-09-20,
+     * a run whose device died at 2 s went on for its full 20 s deciding shots at nothing.
+     *
+     * The device is NOT reopened here. The operator gets told, the receipt names the error,
+     * and the next capture opens the camera the ordinary way; reopening under a session that
+     * has just lost its streams would resume a run under a different configuration than it
+     * started with, which is the one thing the receipt exists to prevent.
+     */
+    private void onCameraDeviceError(int error) {
+        Log.e(TAG, "camera device error " + error + " during a session: ending the capture");
+        if (mCaptureModeManager != null) {
+            mCaptureModeManager.noteCameraError(error);
+        }
+        stopEverything();
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Camera failed — capture stopped")
+                .setMessage("The camera device reported error " + error
+                        + " and had to be released, so the session was ended and its receipt "
+                        + "names the failure. What was recorded before it is intact.\n\n"
+                        + "Error 3 is the device itself; on this phone it is what asking more "
+                        + "than two lenses to stream at once produces.")
+                .setPositiveButton("Open the roll",
+                        (d, w) -> startActivity(new Intent(this, RollActivity.class)))
+                .setNegativeButton("OK", null)
+                .show();
     }
 
     private void onStorageCritical(StorageGuard.Status status) {
