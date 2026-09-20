@@ -91,9 +91,22 @@ public final class TestPlan {
                     + "different rotation rates in one clip.";
 
     /**
-     * The matrix as of 2026-09-03. A, B, C, D are a 2x2 of hold against shutter -- the two
-     * questions open right now (#38's manual shutter, and #47's rolling-shutter direction).
-     * E and F each add one variable to B.
+     * The matrix as of 2026-09-20. A cell earns its place by having a question nobody has
+     * answered yet; when the question is settled the cell goes, because a list of buttons that
+     * mostly do not need pressing is a list nobody reads.
+     *
+     * RETIRED 2026-09-20, with what settled them:
+     *   Z1/Z2  zoom crop -- #48 is CLOSED on their data: the crop is reported and NOT applied.
+     *   E      OIS on with the manual shutter -- shot, and #44 records the clip as still
+     *          awaiting analysis. It was superseded as a CAPTURE by O1/O2, which ask the same
+     *          question at auto exposure where the motor actually has something to remove; E
+     *          was "underpowered by its own success".
+     *
+     * A, B, C, D stay although their 2026-09-03 data was shot and analysed (#47, preserved at
+     * matrix_20260903). The manual shutter was fixed TWICE later the same day -- f8165c6, then
+     * 1e4d60b -- so B and D describe a shutter that no longer exists, and A and C are their
+     * controls. #72's half of the hold question also wants them graded with the matcher bench
+     * rather than blur_census, which has not been done.
      */
     public static List<Step> steps() {
         List<Step> out = new ArrayList<>();
@@ -125,14 +138,6 @@ public final class TestPlan {
                 30, prefs("blur_budget_manual", true, "lock_radiometry", false,
                         "ois", false, "ois_data", false)));
 
-        out.add(new Step("E", "E - portrait, manual shutter, OIS ON",
-                "Hold the phone UPRIGHT (portrait), camera roughly level.\n\n" + WALK
-                        + "\n\nOIS on. The file already records what the HAL SAYS about OIS; "
-                        + "against B this says what the lens actually DID, by comparing image "
-                        + "motion with the gyro that should predict it.",
-                30, prefs("blur_budget_manual", true, "lock_radiometry", false,
-                        "ois", true, "ois_data", true)));
-
         out.add(new Step("F", "F - exposure keys, standing still",
                 "Stand still, phone UPRIGHT, pointed at something with both bright and dark in "
                         + "it.\n\nPress VOLUME UP three times at about 5 seconds, then VOLUME "
@@ -141,31 +146,6 @@ public final class TestPlan {
                         + "exposure steps, and motion would hide them.",
                 25, prefs("blur_budget_manual", false, "lock_radiometry", false,
                         "ois", false, "ois_data", false)));
-
-        // Z1 and Z2 are a PAIR and only mean anything together: same scene, same position, one
-        // setting different. They answer ReconStab #48, which is currently blocking any absolute
-        // blur, shear or focal number this repo produces.
-        //
-        // The question: at zoom_ratio 0.6 every frame reports SCALER_CROP_REGION (815,611)-
-        // (3263,2447) -- exactly 0.6 of the array -- while at 1.0 it reports the full 4080x3060.
-        // So the crop tracks the request. What is NOT known is whether the recorded stream
-        // actually honours it. If it does, the 0.6 clip is a 1.667x zoom IN and its focal is
-        // 4629 px; if the metadata is bookkeeping the HAL then ignores, the focal is 2778 and
-        // every solve initialised at 4604 has been 67% wrong. Two clips of the same wall settle
-        // it in one look: either Z2 is tighter than Z1 or it is not.
-        String zoomShot = "Point the phone at something with detail across the WHOLE frame — a "
-                + "bookshelf, a cluttered bench, a brick wall — from about two metres.\n\nHold as "
-                + "still as you can and DO NOT MOVE BETWEEN Z1 AND Z2. Shoot them back to back "
-                + "from the same spot; if the phone moves, the pair is worthless.";
-        out.add(new Step("Z1", "Z1 - zoom check, ratio 1.0",
-                zoomShot + "\n\nThis one at zoom 1.0 — the full sensor field.",
-                12, prefs("zoom_ratio", 1.0f, "blur_budget_manual", false,
-                        "lock_radiometry", false, "ois", false, "ois_data", false)));
-        out.add(new Step("Z2", "Z2 - zoom check, ratio 0.6",
-                zoomShot + "\n\nThis one at zoom 0.6 — your usual setting. If it looks TIGHTER "
-                        + "than Z1, the crop is real.",
-                12, prefs("zoom_ratio", 0.6f, "blur_budget_manual", false,
-                        "lock_radiometry", false, "ois", false, "ois_data", false)));
 
         // O1/O2 are a PAIR, and they exist because the first attempt at the OIS question was
         // underpowered by its own success. It compared cells B and E, both with the manual
@@ -237,7 +217,11 @@ public final class TestPlan {
                 Streams.STILLS, CaptureModeManager.Mode.WALK));
         out.add(new Step("M2", "M2 - WALK, video only",
                 manifestShot + "\n\nVideo only: the camera button is never pressed. PASS = the "
-                        + "roll says video and the manifest measures an mp4.",
+                        + "roll says video and the manifest measures an mp4.\n\nWATCH THE "
+                        + "CAPTURE BUTTON while this records. It must stay on its STILL icon, "
+                        + "not turn into a stop button: in a video-only clip pressing it starts "
+                        + "a stills run, and it wore a stop icon until 2026-09-20. The mode "
+                        + "strip should be dimmed, and the screen should not time out.",
                 20, prefs("stereo_interval_s", 0, "blur_budget_manual", false,
                         "lock_radiometry", false),
                 Streams.VIDEO, CaptureModeManager.Mode.WALK));
@@ -260,9 +244,19 @@ public final class TestPlan {
                 "Put the phone on something steady, pointed at a small object about half a "
                         + "metre away, and do not touch it.\n\nOne press fires the whole "
                         + "composite: focus stack, bracket, RAW, stereo pair. PASS = the "
-                        + "manifest counts a complete stereo pair.",
+                        + "manifest counts a complete stereo pair.\n\nTRY TO PRESS THE CAPTURE "
+                        + "BUTTON AGAIN while it runs. It should be dimmed and do nothing: two "
+                        + "presses used to start two overlapping composites, writing two "
+                        + "directories and driving the camera twice at once.",
                 25, prefs("stereo_interval_s", 0, "lock_radiometry", true),
                 Streams.COMPOSITE, CaptureModeManager.Mode.OBJECT));
+        out.add(new Step("M6", "M6 - PANO, stills only",
+                "Tripod or gimbal if you have one, otherwise pivot on the spot in steps, "
+                        + "pausing at each.\n\nPANO brackets at each quiet moment. PASS = the "
+                        + "manifest's stills count matches what the roll shows.",
+                25, prefs("stereo_interval_s", 0, "lock_radiometry", true),
+                Streams.STILLS, CaptureModeManager.Mode.PANO));
+
         // N1/N2 are a PAIR (ReconStab #55): what does the HAL's own picture processing cost a
         // matcher? Neither EDGE_MODE nor NOISE_REDUCTION_MODE has ever been set in this fork,
         // so N1 is not a control in the usual sense -- it is the archive. Every clip this
@@ -311,7 +305,41 @@ public final class TestPlan {
                 30, prefs("focus_mode", "MANUAL", "focus_hyperfocal", true,
                         "lock_radiometry", true, "ois", false, "ois_data", false)));
 
-        // D1/D2 (ReconStab #58): does the HAL hand back frames it has already un-warped? The
+        // I1/I2 (ReconStab #63): what does batching the IMU cost, and what does it buy?
+        //
+        // Every listener used the three-argument registerListener until 2026-09-20, so the
+        // framework woke the CPU per event -- ~470 times a second for the gyro and as many for
+        // the accelerometer, while the GPU encodes. Batching delays delivery without moving a
+        // sample in time, so for a recorder it should be free.
+        //
+        // "Should be" is the reason this pair exists. Both clips record batch_latency_us and
+        // the FIFO sizes, so the comparison is decidable from the files: histogram the
+        // inter-sample intervals in each, against the thermal stream in the same file. I1 says
+        // what an unbatched stream looks like on this device, which nobody has actually
+        // plotted; I2 says whether 100 ms of batching changes the sample timing, the gaps, or
+        // the heat.
+        //
+        // Video, not stills, on purpose: batching is NOT free for the stillness shutter, which
+        // reads the stream live to decide when a walk fires a still. This pair deliberately
+        // does not exercise that, because a still fired 100 ms late is a different experiment
+        // and would confound this one.
+        String imuShot = "Walk the same route at the same pace for both, phone UPRIGHT. The "
+                + "scene does not matter -- this pair is about the IMU stream, not the "
+                + "picture.\n\nShoot I1 and I2 back to back so the phone is at a similar "
+                + "temperature for both.";
+        out.add(new Step("I1", "I1 - IMU unbatched (the archive)",
+                imuShot + "\n\nDelivery one sample at a time, as every clip before today.",
+                30, prefs("imu_batch_ms", 0, "blur_budget_manual", false,
+                        "lock_radiometry", true, "ois", false, "ois_data", false)));
+        out.add(new Step("I2", "I2 - IMU batched at 100 ms",
+                imuShot + "\n\nThe gyro, accelerometer and magnetometer buffer in their own "
+                        + "FIFO. The readout should still show IMU at full rate: batching "
+                        + "changes when samples ARRIVE, not how many there are. If the rate "
+                        + "drops, that is the finding.",
+                30, prefs("imu_batch_ms", 100, "blur_budget_manual", false,
+                        "lock_radiometry", true, "ois", false, "ois_data", false)));
+
+        // W1/W2 (ReconStab #58): does the HAL hand back frames it has already un-warped? The
         // coefficients recorded in every session describe the RAW sensor, so if correction ran,
         // a solve using them corrects twice -- and both that and the opposite error look like a
         // slightly-worse-than-expected reprojection, which is not a signature worth trusting.
@@ -323,25 +351,18 @@ public final class TestPlan {
                 + "door frame, a window, the join of a wall and ceiling -- from about two "
                 + "metres, with the line as close to the edge of the picture as you can get it. "
                 + "Barrel distortion is invisible in the middle of the frame.\n\nDo not move "
-                + "between D1 and D2.";
-        out.add(new Step("D1", "D1 - distortion correction OFF",
+                + "between W1 and W2.";
+        out.add(new Step("W1", "W1 - distortion correction OFF",
                 distortionShot + "\n\nCorrection off: the lens as it is, matching the k1..k5 "
                         + "the file records. This is the setting the app defaults to.",
                 12, prefs("distortion_correction", false, "lock_radiometry", true,
                         "ois", false, "ois_data", false)));
-        out.add(new Step("D2", "D2 - distortion correction ON",
+        out.add(new Step("W2", "W2 - distortion correction ON",
                 distortionShot + "\n\nCorrection on. If that straight line is straighter here "
-                        + "than in D1, the HAL is un-warping and the recorded coefficients no "
+                        + "than in W1, the HAL is un-warping and the recorded coefficients no "
                         + "longer describe the picture.",
                 12, prefs("distortion_correction", true, "lock_radiometry", true,
                         "ois", false, "ois_data", false)));
-
-        out.add(new Step("M6", "M6 - PANO, stills only",
-                "Tripod or gimbal if you have one, otherwise pivot on the spot in steps, "
-                        + "pausing at each.\n\nPANO brackets at each quiet moment. PASS = the "
-                        + "manifest's stills count matches what the roll shows.",
-                25, prefs("stereo_interval_s", 0, "lock_radiometry", true),
-                Streams.STILLS, CaptureModeManager.Mode.PANO));
 
         return out;
     }
@@ -349,6 +370,7 @@ public final class TestPlan {
     /** Apply a step's settings, returning the previous values so they can be put back. */
     public static Map<String, Object> apply(SharedPreferences sp, Step step) {
         Map<String, Object> previous = new LinkedHashMap<>();
+
         SharedPreferences.Editor ed = sp.edit();
         for (Map.Entry<String, Object> e : step.prefs.entrySet()) {
             Object want = e.getValue();
