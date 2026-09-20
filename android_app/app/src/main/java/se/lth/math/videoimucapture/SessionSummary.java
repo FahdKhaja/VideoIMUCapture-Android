@@ -116,7 +116,8 @@ public final class SessionSummary {
             }
         }
         String[] parsed = parseName(dir.getName());
-        return new SessionSummary(dir, parsed[0], parsed[1], parsed[2], bytes, video, meta,
+        String kind = measuredKind(parsed[1], parsed[0], parsed[3], video, stills.size());
+        return new SessionSummary(dir, parsed[0], kind, parsed[2], bytes, video, meta,
                 videoMs, stills, pairs, dngs);
     }
 
@@ -162,12 +163,37 @@ public final class SessionSummary {
         } else {
             mode = "OTHER";
         }
-        String kind = prefix.endsWith("_vid") ? "video"
+        // The CLAIM the name makes, which is not the same as what the directory holds. "_vid"
+        // means the video opened this session, not that this session has video: start stills
+        // first and the video lands in a "walk_" directory. The roll shows what was measured
+        // instead -- see measuredKind -- and this is kept only to spot the disagreement.
+        String claimed = prefix.endsWith("_vid") ? "video"
                 : (mode.equals("STILLS") ? "manual burst" : "stills run");
-        if (cell != null) {
-            kind = "test " + cell + " " + kind;
+        return new String[]{mode, claimed, when, cell};
+    }
+
+    /**
+     * What the session actually holds, from the files rather than from the name.
+     *
+     * Four sessions in the archive have no video and no frame records, and nothing in the app
+     * ever said so -- the 2026-09-14 column orbit was found six days later, downstream. A name
+     * that claims video over a directory with none is exactly that failure, so the roll says
+     * NO VIDEO rather than quietly repeating the claim.
+     */
+    private static String measuredKind(String claimed, String mode, String cell,
+                                       File video, int stillCount) {
+        boolean hasVideo = video != null && video.length() > 0;
+        String kind;
+        if (hasVideo) {
+            kind = stillCount > 0 ? "video + stills" : "video";
+        } else if (stillCount > 0) {
+            kind = "video".equals(claimed)
+                    ? "stills only — NO VIDEO"
+                    : (mode.equals("STILLS") ? "manual burst" : "stills run");
+        } else {
+            kind = "EMPTY";
         }
-        return new String[]{mode, kind, when};
+        return cell != null ? "test " + cell + " " + kind : kind;
     }
 
     public String sizeText() {

@@ -275,6 +275,19 @@ public class CameraCaptureFragment extends Fragment
         }
     }
 
+    /**
+     * Put the mode strip back in step with the mode manager, for the test matrix: a cell can
+     * set the mode itself, and a strip still highlighting the operator's choice would be the
+     * app disagreeing with itself in the one place the operator is looking.
+     */
+    public void refreshModeHighlight() {
+        CaptureModeManager modes =
+                ((CameraCaptureActivity) getActivity()).getmCaptureModeManager();
+        if (modes != null) {
+            highlightMode(modes.getMode());
+        }
+    }
+
     private void highlightMode(CaptureModeManager.Mode mode) {
         if (mModeViews == null) {
             return;
@@ -576,19 +589,30 @@ public class CameraCaptureFragment extends Fragment
         }
         mHoldStill = false;
         mSmearPx = -1f;
-        Camera2Proxy camera2Proxy = getmCamera2Proxy();
-        if (camera2Proxy != null) {
-            // Pairs first, while the writer is still open for their last rows.
-            camera2Proxy.stopPeriodicStereo();
-            camera2Proxy.stopRecordingCaptureResult();
-        }
         CaptureModeManager modes =
                 ((CameraCaptureActivity) getActivity()).getmCaptureModeManager();
-        // Tear down the sensor streams only if the video owned them. If a stills run is
-        // still going, stopping its IMU here would blind the stillness trigger mid-walk.
-        boolean ownedSession = modes.videoOwnsSession();
+        Camera2Proxy camera2Proxy = getmCamera2Proxy();
+        if (camera2Proxy != null) {
+            // Pairs first, while the writer is still open for their last rows -- but only if
+            // the video is the last stream on this session. Since the pairs became a property
+            // of the RUN rather than of the recording, a stills walk can own them, and taking
+            // the physical streams back out here would end the walk's metric anchor at the
+            // moment the operator stopped the video and kept walking.
+            if (!modes.isRunning()) {
+                camera2Proxy.stopPeriodicStereo();
+            }
+            camera2Proxy.stopRecordingCaptureResult();
+        }
+        // Tear down the sensor streams only if nothing else is using them. The test was
+        // "did the video own this session?", which is not the same question: a stills run
+        // that opened the session and then STOPPED while the video kept going leaves the
+        // streams open and unowned, and this branch would skip them forever. What matters is
+        // whether a stills run is live right now -- stopping its IMU here would blind the
+        // stillness trigger mid-walk, and not stopping it when nothing is left leaks a
+        // sensor stream into the next session.
+        boolean stillsRunning = modes.isRunning();
         modes.endVideoSession();
-        if (ownedSession) {
+        if (!stillsRunning) {
             getmImuManager().stopRecording();
             ((CameraCaptureActivity) getActivity()).getmGnssLogger().stopRecording();
             ((CameraCaptureActivity) getActivity()).getmThermalLogger().stopRecording();
@@ -601,7 +625,12 @@ public class CameraCaptureFragment extends Fragment
                 mRenderer.changeRecordingState(false);
             }
         });
-        getsRecordingWriter().stopRecording();
+        // ...and the writer last, for the same reason: a stills run still walking is still
+        // writing IMU, GNSS and still rows into it. Closing it here because the VIDEO stopped
+        // would seal the file in the middle of a run that has not finished.
+        if (!stillsRunning) {
+            getsRecordingWriter().stopRecording();
+        }
     }
 
 

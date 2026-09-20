@@ -28,6 +28,29 @@ import java.util.Map;
  */
 public final class TestPlan {
 
+    /**
+     * Which buttons the cell presses, and in what order.
+     *
+     * Until now every cell pressed the record button and only the record button, so the whole
+     * matrix could ask questions about video and no question at all about a stills run -- which
+     * is precisely where the 2026-09-14 failure lived. A capture whose two start controls are
+     * independent needs cells for the combinations, including the two orderings, because the
+     * ordering is what decides which path opens the session and therefore what the directory
+     * ends up called.
+     */
+    public enum Streams {
+        /** Record button only: the classic cell. */
+        VIDEO,
+        /** Camera button only: a stills run, no video. */
+        STILLS,
+        /** Camera button, then record: the stills run owns the session and video joins it. */
+        STILLS_THEN_VIDEO,
+        /** Record button, then camera: video owns the session and stills join it. */
+        VIDEO_THEN_STILLS,
+        /** One press of the camera button in OBJECT, which fires the whole composite. */
+        COMPOSITE
+    }
+
     /** One cell of the matrix. */
     public static final class Step {
         public final String id;            // goes in the directory name: test<id>_...
@@ -35,13 +58,22 @@ public final class TestPlan {
         public final String instruction;   // the part the app cannot set: how to hold, what to do
         public final int seconds;          // fixed, so two clips are the same length
         public final Map<String, Object> prefs;   // applied before recording, restored after
+        public final Streams streams;      // which controls the cell presses
+        public final CaptureModeManager.Mode mode;   // null leaves the operator's mode alone
 
         Step(String id, String title, String instruction, int seconds, Map<String, Object> prefs) {
+            this(id, title, instruction, seconds, prefs, Streams.VIDEO, null);
+        }
+
+        Step(String id, String title, String instruction, int seconds, Map<String, Object> prefs,
+             Streams streams, CaptureModeManager.Mode mode) {
             this.id = id;
             this.title = title;
             this.instruction = instruction;
             this.seconds = seconds;
             this.prefs = prefs;
+            this.streams = streams;
+            this.mode = mode;
         }
     }
 
@@ -176,6 +208,67 @@ public final class TestPlan {
                         + "up. Against S1 this says what the second sensor costs the video.",
                 30, prefs("stereo_interval_s", 1, "blur_budget_manual", false,
                         "lock_radiometry", false, "ois", false, "ois_data", false)));
+
+        // M1..M6 are the manifest matrix, and they are the acceptance test for the thing the
+        // 2026-09-14 column orbit exposed: two independent start controls and a session that
+        // could not say which of them it got. Four sessions in the archive have no video and
+        // never said so.
+        //
+        // Every cell here ends with a session.json, and the cell PASSES when that file's
+        // "agrees" is true -- expected and measured halves in step -- and its "summary" line
+        // describes the cell you actually shot. Nothing needs to be solved and nothing needs
+        // to be looked at on a computer; the phone's own roll shows the kind it MEASURED, so
+        // a failure is visible before leaving the site, which is the entire point.
+        //
+        // M3 and M4 are the same two streams in the two orders, and they exist because the
+        // order decides which path opens the directory and therefore what it is named. M4 is
+        // the case that produced "walk_" directories legitimately full of video, which is why
+        // the name has never been a safe answer to "what is in here?".
+        String manifestShot = "Point at anything with texture and walk a few steps. The picture "
+                + "does not matter for this cell -- what is being tested is whether the session "
+                + "can say what it recorded.\n\nAfterwards, open the roll and read the line "
+                + "under the session.";
+        out.add(new Step("M1", "M1 - WALK, stills only",
+                manifestShot + "\n\nStills only: no video is started at all. This is the shape "
+                        + "of the 2026-09-14 session. PASS = the roll says stills run, the "
+                        + "manifest agrees, and there is at least one stereo pair.",
+                20, prefs("stereo_interval_s", 0, "blur_budget_manual", false,
+                        "lock_radiometry", false),
+                Streams.STILLS, CaptureModeManager.Mode.WALK));
+        out.add(new Step("M2", "M2 - WALK, video only",
+                manifestShot + "\n\nVideo only: the camera button is never pressed. PASS = the "
+                        + "roll says video and the manifest measures an mp4.",
+                20, prefs("stereo_interval_s", 0, "blur_budget_manual", false,
+                        "lock_radiometry", false),
+                Streams.VIDEO, CaptureModeManager.Mode.WALK));
+        out.add(new Step("M3", "M3 - WALK, stills then video",
+                manifestShot + "\n\nThe camera button first, then record a few seconds later. "
+                        + "The stills run owns the session and the video joins it, so the "
+                        + "directory is named walk_ and CONTAINS VIDEO. PASS = the roll says "
+                        + "video + stills despite the name.",
+                20, prefs("stereo_interval_s", 0, "blur_budget_manual", false,
+                        "lock_radiometry", false),
+                Streams.STILLS_THEN_VIDEO, CaptureModeManager.Mode.WALK));
+        out.add(new Step("M4", "M4 - WALK, video then stills",
+                manifestShot + "\n\nRecord first, then the camera button. Video owns the "
+                        + "session, so the directory is named walk_vid_. PASS = the roll says "
+                        + "video + stills and the manifest counts both.",
+                20, prefs("stereo_interval_s", 0, "blur_budget_manual", false,
+                        "lock_radiometry", false),
+                Streams.VIDEO_THEN_STILLS, CaptureModeManager.Mode.WALK));
+        out.add(new Step("M5", "M5 - OBJECT composite",
+                "Put the phone on something steady, pointed at a small object about half a "
+                        + "metre away, and do not touch it.\n\nOne press fires the whole "
+                        + "composite: focus stack, bracket, RAW, stereo pair. PASS = the "
+                        + "manifest counts a complete stereo pair.",
+                25, prefs("stereo_interval_s", 0, "lock_radiometry", true),
+                Streams.COMPOSITE, CaptureModeManager.Mode.OBJECT));
+        out.add(new Step("M6", "M6 - PANO, stills only",
+                "Tripod or gimbal if you have one, otherwise pivot on the spot in steps, "
+                        + "pausing at each.\n\nPANO brackets at each quiet moment. PASS = the "
+                        + "manifest's stills count matches what the roll shows.",
+                25, prefs("stereo_interval_s", 0, "lock_radiometry", true),
+                Streams.STILLS, CaptureModeManager.Mode.PANO));
 
         return out;
     }

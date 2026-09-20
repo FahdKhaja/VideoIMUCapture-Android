@@ -219,6 +219,14 @@ public class CameraCaptureActivity extends AppCompatActivity {
             mCamera2Proxy.reapplyCameraSettings();
         }
         mCaptureModeManager.setTestTag(step.id);
+        // A cell that names a mode sets it, because the mode is in-memory state rather than a
+        // preference and TestPlan.apply cannot reach it. Put the operator's mode back at the
+        // end along with everything else the cell changed.
+        final CaptureModeManager.Mode previousMode = mCaptureModeManager.getMode();
+        if (step.mode != null) {
+            mCaptureModeManager.setMode(step.mode);
+            frag.refreshModeHighlight();
+        }
 
         final android.os.Handler h = new Handler(getMainLooper());
         final int[] countdown = {3};
@@ -233,24 +241,76 @@ public class CameraCaptureActivity extends AppCompatActivity {
                     h.postDelayed(this, 1000L);
                     return;
                 }
-                frag.clickToggleRecording(null);
                 android.widget.Toast.makeText(CameraCaptureActivity.this,
                         "recording " + step.id + " for " + step.seconds + " s",
                         android.widget.Toast.LENGTH_SHORT).show();
+                long end = runStreams(frag, step, h);
                 h.postDelayed(() -> {
-                    frag.clickToggleRecording(null);
                     mCaptureModeManager.setTestTag(null);
+                    if (step.mode != null) {
+                        mCaptureModeManager.setMode(previousMode);
+                        frag.refreshModeHighlight();
+                    }
                     TestPlan.restore(sp, previous);
                     if (mCamera2Proxy != null) {
                         mCamera2Proxy.reapplyCameraSettings();
                     }
                     android.widget.Toast.makeText(CameraCaptureActivity.this,
                             step.id + " done", android.widget.Toast.LENGTH_LONG).show();
-                }, step.seconds * 1000L);
+                }, end);
             }
         };
         h.post(tick);
     }
+
+    /**
+     * Press the cell's controls on its schedule, and return when the last one has been
+     * released so the settings can be put back after it rather than during it.
+     *
+     * The second stream is offset by {@link #STREAM_OFFSET_MS} rather than started with the
+     * first: the two paths hand the session between them, and starting them in the same
+     * millisecond would test the race instead of the combination.
+     */
+    private long runStreams(CameraCaptureFragment frag, TestPlan.Step step,
+                            android.os.Handler h) {
+        final long d = step.seconds * 1000L;
+        switch (step.streams) {
+            case STILLS:
+                mCaptureModeManager.onCaptureButton();
+                h.postDelayed(() -> mCaptureModeManager.onCaptureButton(), d);
+                return d + TAIL_MS;
+            case STILLS_THEN_VIDEO:
+                mCaptureModeManager.onCaptureButton();
+                h.postDelayed(() -> frag.clickToggleRecording(null), STREAM_OFFSET_MS);
+                h.postDelayed(() -> frag.clickToggleRecording(null), d);
+                h.postDelayed(() -> mCaptureModeManager.onCaptureButton(), d + STREAM_OFFSET_MS);
+                return d + STREAM_OFFSET_MS + TAIL_MS;
+            case VIDEO_THEN_STILLS:
+                frag.clickToggleRecording(null);
+                h.postDelayed(() -> mCaptureModeManager.onCaptureButton(), STREAM_OFFSET_MS);
+                h.postDelayed(() -> mCaptureModeManager.onCaptureButton(), d);
+                h.postDelayed(() -> frag.clickToggleRecording(null), d + STREAM_OFFSET_MS);
+                return d + STREAM_OFFSET_MS + TAIL_MS;
+            case COMPOSITE:
+                // One press runs the whole composite and ends it; nothing stops this cell.
+                mCaptureModeManager.onCaptureButton();
+                return d + TAIL_MS;
+            case VIDEO:
+            default:
+                frag.clickToggleRecording(null);
+                h.postDelayed(() -> frag.clickToggleRecording(null), d);
+                return d + TAIL_MS;
+        }
+    }
+
+    /** How long after the first control the second one is pressed, in a two-stream cell. */
+    private static final long STREAM_OFFSET_MS = 4000L;
+    /**
+     * Slack after the last release before the cell's settings are restored. A stills run takes
+     * 2.5 s to drain its closing RAW and seal the session, and putting the settings back under
+     * it would change the capture the manifest is about to describe.
+     */
+    private static final long TAIL_MS = 5000L;
 
     /**
      * The volume keys step exposure compensation, during a recording, without ending it (#28).

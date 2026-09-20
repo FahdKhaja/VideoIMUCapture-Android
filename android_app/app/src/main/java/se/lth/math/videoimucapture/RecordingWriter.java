@@ -55,6 +55,56 @@ public class RecordingWriter implements Runnable{
     private int mFrameMetaDropped = 0;
     private int mFrameTimeDropped = 0;
 
+    // The OTHER way a frame record disappears, and the one that had no counter: the merge
+    // discards a message that has no partner within the 10 us window. That is not a full
+    // queue and not an error -- it is the normal outcome when the two streams drift -- and
+    // it left the August jetty file with 9,457 records against 9,462 encoded frames. Five
+    // holes, no complaint, and the images were being joined to the records BY LIST POSITION
+    // downstream, which is how the wrong focal length was measured (#48). A hole that is not
+    // counted is a hole that shifts every record after it by one.
+    //
+    // Written on the writer thread, read from the UI thread when the session is sealed, so
+    // they are volatile: a stale count in the manifest would be a lie in the receipt.
+    private volatile int mFrameMetaMergeDropped = 0;
+    private volatile int mFrameTimeMergeDropped = 0;
+    private volatile int mFrameMetaWritten = 0;
+
+    /**
+     * What happened to the frame records, snapshotted when the session is sealed. This is
+     * the file admitting to its own holes: {@link #isComplete()} is the question every
+     * downstream reader that joins images to records by position should be asking first.
+     */
+    public static final class FrameAccounting {
+        public final int metaWritten;
+        public final int metaDroppedQueue;
+        public final int metaDroppedMerge;
+        public final int timeDroppedQueue;
+        public final int timeDroppedMerge;
+
+        FrameAccounting(int metaWritten, int metaDroppedQueue, int metaDroppedMerge,
+                        int timeDroppedQueue, int timeDroppedMerge) {
+            this.metaWritten = metaWritten;
+            this.metaDroppedQueue = metaDroppedQueue;
+            this.metaDroppedMerge = metaDroppedMerge;
+            this.timeDroppedQueue = timeDroppedQueue;
+            this.timeDroppedMerge = timeDroppedMerge;
+        }
+
+        public int totalDropped() {
+            return metaDroppedQueue + metaDroppedMerge + timeDroppedQueue + timeDroppedMerge;
+        }
+
+        public boolean isComplete() {
+            return totalDropped() == 0;
+        }
+    }
+
+    /** A snapshot of the frame accounting, safe to take from any thread. */
+    public FrameAccounting accounting() {
+        return new FrameAccounting(mFrameMetaWritten, mFrameMetaDropped, mFrameMetaMergeDropped,
+                mFrameTimeDropped, mFrameTimeMergeDropped);
+    }
+
     //Other state variables
     private Boolean mIsRecording = false;
 
@@ -70,6 +120,11 @@ public class RecordingWriter implements Runnable{
         mFrameDataQueue.clear();
         mFrameTimeQueue.clear();
         mQueue.clear();
+        mFrameMetaDropped = 0;
+        mFrameTimeDropped = 0;
+        mFrameMetaMergeDropped = 0;
+        mFrameTimeMergeDropped = 0;
+        mFrameMetaWritten = 0;
 
         //Start background thread
         Thread myThread = new Thread(this, "RecordingWriter");
@@ -267,6 +322,7 @@ public class RecordingWriter implements Runnable{
                 VideoFrameMetaData.Builder frameBuilder = VideoFrameMetaData.newBuilder().mergeFrom(frameMetaMsg)
                         .setFrameNumber(frameTimeMsg.getFrameNbr());
                 VideoCaptureData.newBuilder().addVideoMeta(frameBuilder).build().writeTo(mFileStream);
+                mFrameMetaWritten++;
                 // Remove frames from queue
                 mFrameTimeQueue.poll();
                 mFrameDataQueue.poll();
@@ -276,11 +332,13 @@ public class RecordingWriter implements Runnable{
                 //Meta message is too old, try another one
                 mFrameDataQueue.poll(); // throw old
                 frameMetaMsg = mFrameDataQueue.peek();
+                mFrameMetaMergeDropped++;
                 Log.d(TAG, "Diff too large, skipping frame meta data");
             } else {
                 // Frame Time message too old, try another one
                 mFrameTimeQueue.poll(); // throw old
                 frameTimeMsg = mFrameTimeQueue.peek();
+                mFrameTimeMergeDropped++;
                 Log.d(TAG, "Diff too large, skipping frame time data");
             }
         }

@@ -68,6 +68,12 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
     private boolean mVideoLockedRadiometry = false;
     private boolean mEndRawPending = false;
 
+    // The receipt for the session, opened by whichever path opens the directory and written
+    // when the LAST of the two closes. Video and stills can each open a session and each join
+    // the other's, so "the session is over" is not a fact either path holds alone.
+    private SessionManifest mManifest;
+    private boolean mVideoActive = false;
+
     public CaptureModeManager(CameraCaptureActivity activity) {
         mActivity = activity;
         mTrigger = new StillnessTrigger(this);
@@ -133,7 +139,11 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             // A stills run is already up: join it rather than opening a second writer over
             // the top of the first. One session, one clock, one directory.
             mVideoOwnsSession = false;
-            notifyState(true, mMode + ": video + stills");
+            mVideoActive = true;
+            if (mManifest != null) {
+                mManifest.noteVideoRequested();
+            }
+            notifyState(true, mMode + " · stills + video");
             Log.i(TAG, "video joining the active " + mMode + " run in " + mRunDir);
             return mRunDir;
         }
@@ -149,7 +159,14 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             return null;
         }
         mVideoOwnsSession = true;
+        mVideoActive = true;
         mRunDir = dir;
+        // A fresh session counts from zero. Without this a video-only clip inherits the shot
+        // count of whatever stills run came before it and its receipt claims stills it never
+        // took -- a manifest is only worth having if nothing in it is left over.
+        mShots = 0;
+        mManifest = new SessionManifest(mActivity, dir, mMode.name(), mTestTag);
+        mManifest.noteVideoRequested();
         Camera2Proxy proxy = mActivity.getmCamera2Proxy();
         mVideoLockedRadiometry = androidx.preference.PreferenceManager
                 .getDefaultSharedPreferences(mActivity).getBoolean("lock_radiometry", true);
@@ -158,17 +175,23 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         }
         Log.i(TAG, "video session radiometry " + (mVideoLockedRadiometry ? "locked" : "floating"));
         notifyState(true, mMode == Mode.OBJECT
-                ? "OBJECT: video adds little to a fixed viewpoint"
-                : mMode + ": video recording");
+                ? "OBJECT · video (adds little to a fixed viewpoint)"
+                : mMode + " · video");
         Log.i(TAG, "video session started in " + dir + " (mode " + mMode + ")");
         return dir;
     }
 
     /** Release whatever beginVideoSession took, and nothing that it did not. */
     public void endVideoSession() {
+        mVideoActive = false;
         if (!mVideoOwnsSession) {
             // The stills run owns the session; it will unlock and close on its own stop.
-            notifyState(mRunning, mRunning ? mMode + " running" : "");
+            // Unless it has already stopped, in which case the video was the last stream
+            // standing and sealing the receipt falls here.
+            if (!mRunning) {
+                sealSession();
+            }
+            notifyState(mRunning, mRunning ? mMode + " · stills" : "");
             return;
         }
         mVideoOwnsSession = false;
@@ -178,9 +201,37 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         }
         mVideoLockedRadiometry = false;
         File dir = mRunDir;
-        mRunDir = null;
+        // A stills run alongside keeps the session open and will seal it itself.
+        if (!mRunning) {
+            sealSession();
+            mRunDir = null;
+        }
         notifyState(false, "video saved");
         Log.i(TAG, "video session ended: " + dir);
+    }
+
+    /**
+     * Write the session its receipt, once, when nothing is still streaming into it.
+     *
+     * The mp4 is finalised by the encoder on the GL thread after the record button is
+     * released, so the file is measured on a short delay -- measuring it the instant the
+     * button comes up reports a zero-length video that is about to exist, which is exactly
+     * the false alarm this manifest is supposed to make impossible.
+     */
+    private void sealSession() {
+        final SessionManifest manifest = mManifest;
+        if (manifest == null) {
+            return;
+        }
+        mManifest = null;
+        Camera2Proxy proxy = mActivity.getmCamera2Proxy();
+        if (proxy != null) {
+            manifest.noteStereoPairs(proxy.periodicStereoPairs());
+        }
+        manifest.noteStillsFired(mShots);
+        final RecordingWriter writer = mActivity.getsRecordingWriter();
+        mMain.postDelayed(() -> manifest.write(writer == null ? null : writer.accounting()),
+                1200L);
     }
 
     /** True when the video recording, not a stills run, is holding the session open. */
@@ -209,10 +260,24 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             Log.w(TAG, "no camera");
             return;
         }
-        mRunDir = mActivity.newCaptureDir(mMode.name().toLowerCase(java.util.Locale.US));
-        if (mRunDir == null) {
-            return;
+        if (mVideoActive && mRunDir != null) {
+            // JOIN the video's session rather than opening a second one beside it. This is the
+            // mirror of beginVideoSession's join, and it was missing: startRun created a new
+            // directory unconditionally, so pressing record and then capture put the JPEGs in
+            // a fresh "walk_" directory while their metadata went to the video's writer in
+            // "walk_vid_". The stills and the rows describing them ended up in two different
+            // sessions -- the header above this class has claimed otherwise since v0.13.
+            Log.i(TAG, "stills joining the active video session in " + mRunDir);
+        } else {
+            mRunDir = mActivity.newCaptureDir(mMode.name().toLowerCase(java.util.Locale.US));
+            if (mRunDir == null) {
+                return;
+            }
         }
+        if (mManifest == null) {
+            mManifest = new SessionManifest(mActivity, mRunDir, mMode.name(), mTestTag);
+        }
+        mManifest.noteStillsRequested();
         mWriter = mActivity.getsRecordingWriter();
         mOwnsWriter = false;
         if (!mWriter.isRecording()) {
@@ -260,8 +325,76 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // A RAW at the start, one at the end: the JPEGs between them are 8-bit with a
         // tone curve, and these two give the run a linear reference to check against.
         captureNow(StillCaptureManager.Mode.SINGLE, 1, true, 0f, 0f, false);
-        notifyState(true, mMode + " running");
+
+        // THE METRIC ANCHOR. Until now the paired-lens still was a property of the VIDEO
+        // recording -- startPeriodicStereo had exactly one caller and it was inside
+        // startRecording() -- so a stills run produced none at all. The archive says it
+        // plainly: 89 single stills across three stills-only walks and not one pair, while
+        // every session that got pairs was recording video.
+        //
+        // That is not a missing convenience. Main and ultrawide fire together from a fixed
+        // 18.02 mm separation and it is the only thing in a handheld capture that fixes
+        // SCALE: GNSS is a 3.8 m receiver, the IMU gives gravity but not distance, and
+        // structure-from-motion is scale-free by construction. A walk without a pair is a
+        // shape, not a measurement -- which is what the 60-still column orbit turned out to
+        // be, the best-conditioned capture in the project and unscaleable.
+        //
+        // OBJECT already had the right instinct and ends its composite with one pair. WALK
+        // gets the same guarantee, plus the periodic stream when the operator has asked for
+        // an interval.
+        startRunStereo(proxy);
+
+        notifyState(true, mMode + " · stills");
         Log.i(TAG, "run started in " + mRunDir);
+    }
+
+    /**
+     * Pairs for a stills run: the periodic stream if an interval is set, otherwise a single
+     * anchoring pair once the opening RAW has drained.
+     *
+     * The two are exclusive by construction -- captureStereoPair declines while periodic
+     * pairs are running, because a one-shot warm-up would swap the repeating request out
+     * from under them -- so asking for both is safe and the interval wins.
+     */
+    private void startRunStereo(Camera2Proxy proxy) {
+        StillCaptureManager scm = proxy.getStillCaptureManager();
+        if (scm == null || !scm.stereoSupported()) {
+            Log.i(TAG, "no stereo pair available on this device: run has no metric anchor");
+            return;
+        }
+        int intervalS = androidx.preference.PreferenceManager
+                .getDefaultSharedPreferences(mActivity).getInt("stereo_interval_s", 0);
+        StillCaptureManager.CaptureMode cm = mMode == Mode.PANO
+                ? StillCaptureManager.CaptureMode.PANO
+                : StillCaptureManager.CaptureMode.WALK;
+        if (intervalS > 0) {
+            proxy.startPeriodicStereo(intervalS * 1000L, mRunDir, mWriter, cm);
+            return;
+        }
+        if (mVideoActive) {
+            // A video is recording on this session. The one-shot pair warms up by replacing
+            // the repeating request with a TEMPLATE_PREVIEW copy for ~900 ms, which is the
+            // recording's own request; the clip would take the hit for the anchor. Video
+            // sessions get their pairs from the interval instead, which puts both physical
+            // streams in the RECORD request and leaves them there.
+            Log.i(TAG, "video is recording: leaving the anchor pair to the interval");
+            return;
+        }
+        // One pair, after the opening RAW: the warm-up puts both physical streams into the
+        // repeating request for ~900 ms and restores the preview afterwards, so it must not
+        // land on top of a burst that is still draining.
+        final File dir = mRunDir;
+        final RecordingWriter writer = mWriter;
+        mMain.postDelayed(() -> {
+            if (!mRunning) {
+                return;
+            }
+            Camera2Proxy p = mActivity.getmCamera2Proxy();
+            if (p != null) {
+                Log.i(TAG, "firing the run's anchoring stereo pair");
+                p.captureStereoPair(dir, writer);
+            }
+        }, 1800L);
     }
 
     private void stopRun() {
@@ -274,12 +407,30 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             mEndRawPending = true;
             captureNow(StillCaptureManager.Mode.SINGLE, 1, true, 0f, 0f, false);
             proxy.lockAutoAlgorithms(false);
+            // Only if the video is not still running on the same session: the pairs belong
+            // to whichever stream is still open, and taking the physical streams out of a
+            // live recording's request mid-clip is the one thing that must not happen here.
+            if (!mVideoActive) {
+                proxy.stopPeriodicStereo();
+            }
         }
         final int shots = mShots;
         final RecordingWriter writer = mWriter;
         final boolean owns = mOwnsWriter;
         // Let the closing RAW drain before the metadata file is sealed.
         mMain.postDelayed(() -> {
+            // ...and tear the streams down only if this run is the last thing using them.
+            // The video path has guarded this direction since v0.13 ("only if the video owned
+            // them"); this direction never did, so stopping a stills run while a video was
+            // recording on the same session closed the IMU, GNSS and thermal streams under a
+            // live clip -- and, when the stills run had opened it, the metadata writer itself.
+            // The video kept recording pictures and stopped recording anything that explains
+            // them, which no file in the archive would show as anything but a short session.
+            if (mVideoActive) {
+                notifyState(true, mMode + " · video");
+                Log.i(TAG, "stills stopped; video still recording, streams left open");
+                return;
+            }
             mActivity.getmImuManager().stopRecording();
             mActivity.getmGnssLogger().stopRecording();
             mActivity.getmThermalLogger().stopRecording();
@@ -287,6 +438,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
                 writer.stopRecording();
             }
             notifyState(false, shots + " shots");
+            sealSession();
         }, 2500L);
         Log.i(TAG, "run stopped after " + shots + " shots");
     }
@@ -338,6 +490,10 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         if (dir == null) {
             return;
         }
+        // OBJECT runs its own session start to finish and never joins one, so its receipt is
+        // local to the composite rather than the field the two continuous paths share.
+        final SessionManifest manifest = new SessionManifest(mActivity, dir, mMode.name(), mTestTag);
+        manifest.noteStillsRequested();
         RecordingWriter writer = mActivity.getsRecordingWriter();
         boolean owns = false;
         if (!writer.isRecording()) {
@@ -414,6 +570,8 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
                 writer.stopRecording();
             }
             notifyState(false, hasStereo ? "OBJECT complete + stereo" : "OBJECT complete");
+            manifest.noteStereoPairs(hasStereo ? 1 : 0);
+            mMain.postDelayed(() -> manifest.write(writer.accounting()), 1200L);
             Log.i(TAG, "object composite complete: " + dir);
         }, hasStereo ? 15500L : 10500L);   // stereo adds a warm-up before its capture
     }
