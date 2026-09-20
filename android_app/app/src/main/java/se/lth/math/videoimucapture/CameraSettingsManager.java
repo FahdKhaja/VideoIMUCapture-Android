@@ -35,7 +35,7 @@ import java.util.stream.Collectors;
 
 public class CameraSettingsManager {
     private static final String TAG = "CameraSettingsManager";
-    private enum Setting {OIS, OIS_DATA, DVS, DISTORTION_CORRECTION, VIDEO_SIZE, FOCUS_MODE, EXPOSURE_MODE, ZOOM_RATIO, PHYSICAL_CAMERA};
+    private enum Setting {OIS, OIS_DATA, DVS, DISTORTION_CORRECTION, RAW_PIXELS, VIDEO_SIZE, FOCUS_MODE, EXPOSURE_MODE, ZOOM_RATIO, PHYSICAL_CAMERA};
     private Map<Setting, CameraSetting> mCameraSettings;
     private boolean mInitialized = false;
 
@@ -139,6 +139,8 @@ public class CameraSettingsManager {
                     new CameraSettingBoolean("distortion_correction", null, 1, null, false)
             );
         }
+
+        mCameraSettings.put(Setting.RAW_PIXELS, new CameraSettingRawPixels(cameraCharacteristics));
 
         mCameraSettings.put(Setting.VIDEO_SIZE, new CameraSettingVideoSize(cameraCharacteristics));
         mCameraSettings.put(Setting.FOCUS_MODE, new CameraSettingFocusMode(cameraCharacteristics));
@@ -811,6 +813,74 @@ class CameraSettingZoomRatio extends CameraSetting {
             super.updatePreference(preference);
         } else {
             seekbarPref.setVisible(false);
+        }
+    }
+}
+
+/**
+ * Turn off what the HAL does to the pixels for a human viewer (ReconStab #55).
+ *
+ * EDGE_MODE and NOISE_REDUCTION_MODE appear nowhere else in this fork, so every solve frame
+ * ever shot here ran the vendor default for a video stream: spatial denoise and edge
+ * enhancement, tuned to look good to a person.
+ *
+ * Both are hostile to matching, in opposite directions. Sharpening MANUFACTURES gradients --
+ * an unsharp halo sits at a fixed offset from an edge in IMAGE space, so the same physical
+ * edge carries a different synthetic gradient in two views taken from different distances,
+ * and the detector locks onto the halo rather than the scene. Denoise ERASES texture --
+ * wet rock at ISO 800 is exactly the low-contrast high-frequency detail a denoiser is built
+ * to remove, and a matcher has nothing left to hold.
+ *
+ * It is off by default and it sets nothing at all when off, rather than setting FAST. Those
+ * are not the same: FAST is the documented default for the template, but this is a vendor HAL
+ * and the archive was shot with whatever it actually chose. Writing a value here would quietly
+ * change every future capture and make the comparison with the archive meaningless, which is
+ * the failure mode this repo keeps finding in itself. The RESULT is recorded per frame either
+ * way, so the first clip shot after this says what the default has been all along.
+ */
+class CameraSettingRawPixels extends CameraSetting {
+
+    private final boolean mHasEdge;
+    private final boolean mHasNoiseReduction;
+
+    public CameraSettingRawPixels(CameraCharacteristics characteristics) {
+        mPrefKey = "raw_pixels";
+        int[] edge = characteristics.get(
+                CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES);
+        int[] nr = characteristics.get(
+                CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES);
+        mHasEdge = contains(edge, CameraMetadata.EDGE_MODE_OFF);
+        mHasNoiseReduction = contains(nr, CameraMetadata.NOISE_REDUCTION_MODE_OFF);
+        // Configurable only if the device will actually accept OFF for at least one of them.
+        // A switch that cannot change anything is worse than no switch: it would make the
+        // setting look answered.
+        mConfigurable = mHasEdge || mHasNoiseReduction;
+    }
+
+    private static boolean contains(int[] modes, int wanted) {
+        if (modes == null) {
+            return false;
+        }
+        for (int m : modes) {
+            if (m == wanted) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    public void updateCaptureRequest(CaptureRequest.Builder builder) {
+        if (!mConfigurable || mSharedPreferences == null
+                || !mSharedPreferences.getBoolean(mPrefKey, false)) {
+            return;   // leave the keys untouched: the HAL's default, as every clip so far
+        }
+        if (mHasEdge) {
+            builder.set(CaptureRequest.EDGE_MODE, CameraMetadata.EDGE_MODE_OFF);
+        }
+        if (mHasNoiseReduction) {
+            builder.set(CaptureRequest.NOISE_REDUCTION_MODE,
+                    CameraMetadata.NOISE_REDUCTION_MODE_OFF);
         }
     }
 }

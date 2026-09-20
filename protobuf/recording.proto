@@ -165,6 +165,16 @@ message VideoFrameMetaData {
     repeated float intrinsics = 2;   // fx, fy, cx, cy, skew -- same layout as field 25
   }
   repeated LensIntrinsicsSample lens_intrinsics_samples = 31;
+
+  // ReconStab #55. Neither key appeared anywhere in this fork, so every solve frame ever shot
+  // ran the HAL's default for a video stream -- spatial denoise and edge enhancement, tuned to
+  // look good to a person. A sharpening halo sits at a fixed offset from an edge IN IMAGE
+  // SPACE, so the same physical edge carries a different synthetic gradient in two views from
+  // different distances, and a detector will happily lock onto the halo. Denoise goes the other
+  // way and erases the real texture a matcher needs. Recorded per frame because both are
+  // allowed to vary with ISO and with the HAL's own scene decisions.
+  optional int32 edge_mode = 32;              // EDGE_MODE: 0 OFF, 1 FAST, 2 HIGH_QUALITY, 3 ZERO_SHUTTER_LAG
+  optional int32 noise_reduction_mode = 33;   // NOISE_REDUCTION_MODE: same scale
 }
 
 // Barometer sample. time_ns is the sensor event timestamp, same clock as IMUData.time_ns.

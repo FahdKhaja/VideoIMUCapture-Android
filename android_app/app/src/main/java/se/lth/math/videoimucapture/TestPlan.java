@@ -263,6 +263,56 @@ public final class TestPlan {
                         + "manifest counts a complete stereo pair.",
                 25, prefs("stereo_interval_s", 0, "lock_radiometry", true),
                 Streams.COMPOSITE, CaptureModeManager.Mode.OBJECT));
+        // N1/N2 are a PAIR (ReconStab #55): what does the HAL's own picture processing cost a
+        // matcher? Neither EDGE_MODE nor NOISE_REDUCTION_MODE has ever been set in this fork,
+        // so N1 is not a control in the usual sense -- it is the archive. Every clip this
+        // project has ever solved was shot the way N1 is shot.
+        //
+        // The comparison is made downstream on identical scenes: feature count, match count and
+        // the spread of reprojection error. What makes it decidable is that both clips now
+        // record edge_mode and noise_reduction_mode per frame, so N1 also answers a question
+        // nothing has asked yet -- what the vendor default actually IS.
+        String pixelShot = "Point at something with fine, low-contrast texture at one to three "
+                + "metres -- wet rock, gravel, brushed metal, fabric. NOT a high-contrast edge: "
+                + "the argument is about texture a denoiser eats and halos a sharpener "
+                + "invents.\n\nStand still. Shoot N1 and N2 back to back from the same spot in "
+                + "the same light.";
+        out.add(new Step("N1", "N1 - HAL processing as shipped",
+                pixelShot + "\n\nEdge and noise reduction left at the vendor default, which is "
+                        + "how every clip in the archive was shot.",
+                20, prefs("raw_pixels", false, "lock_radiometry", true,
+                        "ois", false, "ois_data", false)));
+        out.add(new Step("N2", "N2 - raw pixels, no sharpening or denoise",
+                pixelShot + "\n\nBoth turned OFF. Against N1 this says what the HAL was doing "
+                        + "to every solve frame this project has produced.",
+                20, prefs("raw_pixels", true, "lock_radiometry", true,
+                        "ois", false, "ois_data", false)));
+
+        // D1/D2 (ReconStab #58): does the HAL hand back frames it has already un-warped? The
+        // coefficients recorded in every session describe the RAW sensor, so if correction ran,
+        // a solve using them corrects twice -- and both that and the opposite error look like a
+        // slightly-worse-than-expected reprojection, which is not a signature worth trusting.
+        //
+        // Decidable from the two clips alone, before any solve: put something straight near the
+        // frame edge and see whether it bends differently between them. If the two look
+        // identical, the HAL ignored the request, and that is the finding.
+        String distortionShot = "Point at a STRAIGHT edge running near the frame border -- a "
+                + "door frame, a window, the join of a wall and ceiling -- from about two "
+                + "metres, with the line as close to the edge of the picture as you can get it. "
+                + "Barrel distortion is invisible in the middle of the frame.\n\nDo not move "
+                + "between D1 and D2.";
+        out.add(new Step("D1", "D1 - distortion correction OFF",
+                distortionShot + "\n\nCorrection off: the lens as it is, matching the k1..k5 "
+                        + "the file records. This is the setting the app defaults to.",
+                12, prefs("distortion_correction", false, "lock_radiometry", true,
+                        "ois", false, "ois_data", false)));
+        out.add(new Step("D2", "D2 - distortion correction ON",
+                distortionShot + "\n\nCorrection on. If that straight line is straighter here "
+                        + "than in D1, the HAL is un-warping and the recorded coefficients no "
+                        + "longer describe the picture.",
+                12, prefs("distortion_correction", true, "lock_radiometry", true,
+                        "ois", false, "ois_data", false)));
+
         out.add(new Step("M6", "M6 - PANO, stills only",
                 "Tripod or gimbal if you have one, otherwise pivot on the spot in steps, "
                         + "pausing at each.\n\nPANO brackets at each quiet moment. PASS = the "

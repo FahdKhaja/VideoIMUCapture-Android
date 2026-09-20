@@ -1458,6 +1458,18 @@ public class Camera2Proxy {
         if (ev != null) {
             b.setAeExposureCompensation(ev);
         }
+        // What the HAL did to the pixels before the matcher ever sees them (ReconStab #55).
+        // These were never set and never read, so the answer for every frame in the archive is
+        // "whatever the vendor's video default is" -- and the result is where it is settled,
+        // not the request, because a vendor HAL may decline what it is asked for.
+        Integer edge = result.get(CaptureResult.EDGE_MODE);
+        if (edge != null) {
+            b.setEdgeMode(edge);
+        }
+        Integer nr = result.get(CaptureResult.NOISE_REDUCTION_MODE);
+        if (nr != null) {
+            b.setNoiseReductionMode(nr);
+        }
         // Intrinsics sampled WITHIN the capture (#50). API 35; this device runs 36 and lists the
         // key on all seven cameras. Whether it fills it is a different question -- the key beside
         // it, oisSamples, is listed on all seven and returns null on every frame -- so this is
