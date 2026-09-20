@@ -91,3 +91,6 @@ __pycache__
 
 #Release
 android_app/app/release
+
+# Claude Code local session data
+.claude/
