@@ -95,16 +95,35 @@ public final class TestPlan {
      * capture on this phone has answered yet; when one is shot it drops out of the operator's
      * view on its own.
      */
-    private static final java.util.Set<String> REQUESTED = new java.util.HashSet<>(
-            java.util.Arrays.asList(
-                    "M1", "M2", "M3", "M4", "M5", "M6",     // the session says what it got
-                    "L1",                                   // every rear lens, one instant
-                    "G1", "G2",                             // measure the unpublished baselines
-                    "I1", "I2",                             // IMU batching
-                    "N1", "N2",                             // HAL sharpening and denoise
-                    "W1", "W2",                             // distortion correction
-                    "H1", "H2",                             // hyperfocal against autofocus
-                    "O1", "O2"));                           // OIS where the motor has work
+    /**
+     * IN PRIORITY ORDER, and the order is the point: the to-do view shows them exactly like
+     * this, so the top of the list is always the next thing worth doing.
+     *
+     * Grouped by what they cost the operator rather than by what they ask, because the cost
+     * is what decides whether a cell gets shot. Four sittings:
+     *
+     *   1. M1..M6   indoors, no kit, any scene. These confirm the session machinery, which is
+     *               where three interaction bugs were found and fixed and where none of the
+     *               fixes have been near a camera. If M1 is wrong, most of 2026-09-20 is.
+     *   2. L1,G1,G2 a steady surface, a flat target and a tape measure. L1 first: it proves
+     *               the all-lens capture works at all, and G1/G2 are that same machinery
+     *               carrying a measurement, so shooting them before L1 risks wasting the setup.
+     *   3. W1..N2   a steady surface and a scene chosen for the question. Cheap, and both
+     *               pairs bear on every frame the project has ever matched.
+     *   4. H1..O2   a walk, in back-to-back pairs. Longest to shoot and least blocking.
+     *
+     * Within a sitting the pairs must stay adjacent: a pair shot an hour apart in different
+     * light is two clips, not a comparison.
+     */
+    private static final java.util.List<String> REQUESTED = java.util.Arrays.asList(
+            // 1 -- does what was built this week actually work?
+            "M1", "M2", "M3", "M4", "M5", "M6",
+            // 2 -- the all-lens shot, then the baselines it makes measurable
+            "L1", "G1", "G2",
+            // 3 -- what the HAL does to the pixels, settled cheaply
+            "W1", "W2", "N1", "N2",
+            // 4 -- the walking comparisons
+            "H1", "H2", "I1", "I2", "O1", "O2");
 
     // ------------------------------------------------------------------ what has been shot
 
@@ -160,11 +179,22 @@ public final class TestPlan {
         ed.putBoolean("cell_history_seeded", true).apply();
     }
 
-    /** The cells asked for and not yet shot: the to-do list. */
+    /**
+     * The cells asked for and not yet shot, IN PRIORITY ORDER: the to-do list.
+     *
+     * Ordered by REQUESTED rather than by where the cell happens to sit in steps(), so the
+     * first row is always the next thing worth doing. An operator reading a list top to bottom
+     * should not have to know which entries matter.
+     */
     public static List<Step> outstanding(SharedPreferences sp) {
-        List<Step> out = new ArrayList<>();
+        Map<String, Step> byId = new LinkedHashMap<>();
         for (Step s : steps()) {
-            if (s.isRequested() && !isDone(sp, s.id)) {
+            byId.put(s.id, s);
+        }
+        List<Step> out = new ArrayList<>();
+        for (String id : REQUESTED) {
+            Step s = byId.get(id);
+            if (s != null && !isDone(sp, id)) {
                 out.add(s);
             }
         }

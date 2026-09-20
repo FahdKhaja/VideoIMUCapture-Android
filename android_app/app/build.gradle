@@ -19,8 +19,17 @@ android {
         applicationId "se.lth.math.videoimucapture"
         minSdkVersion 24
         targetSdkVersion 34
-        versionCode 18
-        versionName "0.18"
+        versionCode 19
+        versionName "0.19"
+
+        // WHICH BUILD SHOT THIS. versionName alone cannot answer it: a version is bumped once
+        // and then a dozen builds carry it, so two clips that behave differently can both say
+        // "0.19" and the data has no way to tell them apart. That matters now more than it
+        // ever has -- a matrix of paired cells is about to be shot, and a pair is only a
+        // comparison if both halves came from the same binary.
+        resValue "string", "git_sha", providers.exec {
+            commandLine 'git', 'rev-parse', '--short', 'HEAD'
+        }.standardOutput.asText.map { it.trim() }.getOrElse("unknown")
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }

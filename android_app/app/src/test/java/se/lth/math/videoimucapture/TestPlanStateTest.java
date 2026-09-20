@@ -144,6 +144,29 @@ public class TestPlanStateTest {
     }
 
     @Test
+    public void theToDoListIsInPriorityOrder() {
+        // The order IS the answer to "which of these should I do first", so it has to survive
+        // into the list the operator reads rather than being lost to insertion order.
+        java.util.List<TestPlan.Step> todo = TestPlan.outstanding(mPrefs);
+        assertEquals("the session machinery leads", "M1", todo.get(0).id);
+        assertEquals("M2", todo.get(1).id);
+        int l1 = -1, g1 = -1, o2 = -1;
+        for (int i = 0; i < todo.size(); i++) {
+            if (todo.get(i).id.equals("L1")) l1 = i;
+            if (todo.get(i).id.equals("G1")) g1 = i;
+            if (todo.get(i).id.equals("O2")) o2 = i;
+        }
+        assertTrue("L1 proves the machinery G1 depends on", l1 < g1);
+        assertTrue("the walking pairs come last", o2 == todo.size() - 1);
+    }
+
+    @Test
+    public void shootingFromTheTopKeepsTheRestInOrder() {
+        TestPlan.markDone(mPrefs, "M1");
+        assertEquals("M2", TestPlan.outstanding(mPrefs).get(0).id);
+    }
+
+    @Test
     public void everyRequestedIdIsARealCell() {
         // A typo in the request list would silently ask for a cell that cannot be pressed.
         java.util.Set<String> ids = new java.util.HashSet<>();

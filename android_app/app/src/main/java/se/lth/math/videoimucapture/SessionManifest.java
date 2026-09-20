@@ -47,6 +47,7 @@ public final class SessionManifest {
     private final String mTestTag;
     private final long mStartedWallMs;
     private final String mAppVersion;
+    private final String mGitSha;
 
     // What the capture path BELIEVES it did. The measured counts come from the directory.
     private boolean mVideoRequested = false;
@@ -69,6 +70,23 @@ public final class SessionManifest {
         mTestTag = testTag;
         mStartedWallMs = System.currentTimeMillis();
         mAppVersion = appVersion(context);
+        mGitSha = gitSha(context);
+    }
+
+    /**
+     * The exact commit this build came from.
+     *
+     * A version number is bumped once and then carried by every build until the next bump, so
+     * two clips that behave differently can both say "0.19". For a matrix of paired cells that
+     * is not good enough: a pair is a comparison only if both halves came from one binary, and
+     * this is the field that proves it.
+     */
+    private static String gitSha(android.content.Context context) {
+        try {
+            return context.getString(R.string.git_sha);
+        } catch (Exception e) {
+            return "unknown";
+        }
     }
 
     /**
@@ -163,6 +181,7 @@ public final class SessionManifest {
         try {
             JSONObject root = new JSONObject();
             root.put("app_version", mAppVersion);
+            root.put("git_sha", mGitSha);
             root.put("mode", mMode);
             if (mTestTag != null) {
                 root.put("test_cell", mTestTag);
