@@ -394,6 +394,16 @@ message StillMetaData {
   // the pixels.
   int64 focus_settle_ns = 27;
   bool focus_settled = 28;        // false => the shutter opened on a lens still in motion
+
+  // SENSOR_TIMESTAMP of the LOGICAL result this row was written from, beside time_ns which
+  // is the kept frame's own stamp. Two comparisons a reader can now make that it could not:
+  //   time_ns == logical_result_time_ns  -> the pixels are this request's frame;
+  //   time_ns differs                    -> an armed reader kept a warm-up frame already in
+  //                                         flight (the one-shot path's race, 2026-09-20);
+  //   time_ns equal across the two halves of a burst -> the pair is one sensor period.
+  // The per-physical result stamps cannot answer either: on this HAL they sit up to ~100 ms
+  // apart within ONE request, on a clock of their own.
+  int64 logical_result_time_ns = 29;
 }
 
 // GNSS fix from LocationManager (GPS provider, no fused black box).

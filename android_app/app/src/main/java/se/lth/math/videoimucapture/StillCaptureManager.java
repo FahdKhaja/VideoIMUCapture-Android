@@ -535,6 +535,7 @@ public class StillCaptureManager {
         mPeriodicKeptUw = mPeriodicKeptMain = true;   // nothing armed yet
         mPeriodicPairs = 0;
         mPeriodicUnmatched = 0;
+        mStereoBurstSize = 2;
         mPeriodicPending.clear();
         mPeriodicResults.clear();
         // Any OBJECT arm left over must not steal the first periodic frame.
@@ -699,6 +700,8 @@ public class StillCaptureManager {
         // discarded. Every CONFIGURED lens fires: with the metric pair configured this is the
         // 18.02 mm pair as before, and with the all-lens set it is one simultaneous frame from
         // every rear camera the device has.
+        mStereoBurstSize = Math.max(2, mLensReaders.size());
+        mOneShotImageTs.clear();
         for (java.util.concurrent.atomic.AtomicBoolean want : mLensWanted.values()) {
             want.set(true);
         }
@@ -792,6 +795,9 @@ public class StillCaptureManager {
                     return;
                 }
                 burstId = mStereoBurstId;
+                // The row for this lens is written from the capture callback, which on this
+                // hardware runs AFTER the image lands; leave the stamp where it can find it.
+                mOneShotImageTs.put(physicalId, imageTs);
             }
             // Copy the planes out and release the buffer. The JPEG encode is NOT done here:
             // this is the camera handler, which also carries every capture result and, in
@@ -841,7 +847,8 @@ public class StillCaptureManager {
     /** The OBJECT-station pair: burst id and mode are the composite's. */
     private void writeStereoMeta(TotalCaptureResult result, String physicalId,
                                  String tag, int index) {
-        writeStereoMeta(result, physicalId, tag, index, mStereoBurstId, CaptureMode.OBJECT, 0L);
+        writeStereoMeta(result, physicalId, tag, index, mStereoBurstId, CaptureMode.OBJECT,
+                mOneShotImageTs.getOrDefault(physicalId, 0L));
     }
 
     /**
@@ -860,12 +867,11 @@ public class StillCaptureManager {
         RecordingProtos.StillMetaData.Builder b =
                 RecordingProtos.StillMetaData.newBuilder()
                         .setBurstId(burstId)
-                        // How many lenses this simultaneous capture actually had, not 2. It
-                        // was a constant because a simultaneous capture meant a pair; with
-                        // the all-lens set a burst carries one frame per configured lens, and
-                        // a reader joining frames by burst needs to know how many to expect
-                        // before it can notice that one is missing.
-                        .setBurstSize(Math.max(2, mLensReaders.size()))
+                        // How many frames THIS capture carries, as set by the path issuing
+                        // it. A reader joining frames by burst needs to know how many to
+                        // expect before it can notice that one is missing -- and it was the
+                        // number of configured readers, which said 4 on every pair.
+                        .setBurstSize(mStereoBurstSize)
                         .setBurstIndex(index)
                         .setKindValue(Mode.SINGLE.ordinal())
                         .setCaptureMode(mode.ordinal())
@@ -909,6 +915,13 @@ public class StillCaptureManager {
         // tolerance downstream. The image stamp is also the frame table's stamp, which is what
         // lets a pair join the video's own frame without a lookup. Exposure and ISO still come
         // from the per-physical result: the two sensors really are exposed differently.
+        // The LOGICAL result's stamp, alongside the frame's own: equal means the kept pixels
+        // are this request's frame; different means an armed reader kept a warm-up frame that
+        // was already in flight. Without both in the row that race is invisible.
+        Long logicalTs = result.get(CaptureResult.SENSOR_TIMESTAMP);
+        if (logicalTs != null) {
+            b.setLogicalResultTimeNs(logicalTs);
+        }
         Long ts = per.get(CaptureResult.SENSOR_TIMESTAMP);
         if (imageTs != 0L) {
             b.setTimeNs(imageTs);
@@ -1124,6 +1137,30 @@ public class StillCaptureManager {
      */
     private volatile int mStereoMetaRows = 0;
 
+    /**
+     * How many frames the CURRENT simultaneous capture carries. Set by whichever path is
+     * issuing it: 2 for a pair (the periodic stream, a pair from the sequence, the metric pair
+     * alone), every configured lens for the single all-lens request that this phone cannot
+     * run. It was computed from the number of configured readers, which reported 4 on every
+     * row of a pair sequence -- a reader joining halves by burst would have waited for two
+     * frames that were never going to come. Distinct from mBurstSize, which is the ordinary
+     * still burst's and can be mid-flight when a pair fires.
+     */
+    private volatile int mStereoBurstSize = 2;
+
+    /**
+     * The stamp of the frame each lens KEPT for the one-shot burst in flight, by physical id.
+     *
+     * The periodic path records the image's own timestamp; the one-shot path wrote 0 and the
+     * row fell back to the per-physical result's stamp -- which on this HAL can sit up to
+     * 99 ms from its partner's within ONE request (measured 2026-09-20, the S2 clock quirk).
+     * So the rows could not say whether a pair was simultaneous, nor whether the kept pixels
+     * were the request's frame or a warm-up frame that happened to be passing. Cleared when
+     * the burst is armed, so a stale stamp can never be attributed to the next one.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> mOneShotImageTs =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     public int oneShotStereoBursts() {
         return mOneShotBursts;
     }
@@ -1160,6 +1197,8 @@ public class StillCaptureManager {
         mOutputDir = outputDir;
         mRecordingWriter = writer;
         mStereoBurstId = SystemClock.elapsedRealtimeNanos();
+        mStereoBurstSize = 2;
+        mOneShotImageTs.clear();
         for (java.util.Map.Entry<String, java.util.concurrent.atomic.AtomicBoolean> e
                 : mLensWanted.entrySet()) {
             e.getValue().set(e.getKey().equals(pair[0]) || e.getKey().equals(pair[1]));
@@ -1197,9 +1236,9 @@ public class StillCaptureManager {
                                                @NonNull CaptureRequest request,
                                                @NonNull TotalCaptureResult result) {
                     writeStereoMeta(result, pair[0], lensTag(pair[0]), 0, burstId,
-                            CaptureMode.OBJECT, 0L);
+                            CaptureMode.OBJECT, mOneShotImageTs.getOrDefault(pair[0], 0L));
                     writeStereoMeta(result, pair[1], lensTag(pair[1]), 1, burstId,
-                            CaptureMode.OBJECT, 0L);
+                            CaptureMode.OBJECT, mOneShotImageTs.getOrDefault(pair[1], 0L));
                 }
             }, mHandler);
             mOneShotBursts++;
