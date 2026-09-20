@@ -88,14 +88,19 @@ public class StereoProbe {
                     logicals.put(probeLogical(manager, id, ch, physicals, handler));
                     // After probeLogical has closed its device: every streaming case opens
                     // and closes its own, because the failing ones kill it.
-                    JSONObject s = new JSONObject();
-                    s.put("logical_id", id);
-                    s.put("cases", probeStreaming(manager, id, physicals, handler));
-                    streaming.put(s);
+                    // Zoom BEFORE streaming. The streaming stage ends on the four-lens case,
+                    // which kills the device, and on 2026-09-20 a three-lens case put the
+                    // camera into "disabled by policy" for two seconds -- the zoom stage,
+                    // running straight after, could not open it and returned nothing at all.
+                    // It asks nothing of the HAL that has ever failed, so it goes first.
                     JSONObject z = new JSONObject();
                     z.put("logical_id", id);
                     z.put("cases", probeZoom(context, manager, id, physicals, handler));
                     zoom.put(z);
+                    JSONObject s = new JSONObject();
+                    s.put("logical_id", id);
+                    s.put("cases", probeStreaming(manager, id, physicals, handler));
+                    streaming.put(s);
                 }
                 root.put("logical_cameras", logicals);
                 root.put("streaming", streaming);
@@ -735,8 +740,22 @@ public class StereoProbe {
                 new android.hardware.camera2.CameraCaptureSession[1];
         List<ImageReader> readers = new ArrayList<>();
         try {
-            device = openCameraTracked(manager, logicalId, handler, err);
+            // The camera service can refuse an open for a couple of seconds after a device
+            // error ("disabled by policy", 2026-09-20, following a three-lens request). An
+            // empty result from a refused open is indistinguishable from a probe that never
+            // ran, so: retry, and if it still will not open, say so in the result.
+            for (int attempt = 0; attempt < 6 && device == null; attempt++) {
+                if (attempt > 0) {
+                    Thread.sleep(1000L);
+                    err.set(-1);
+                }
+                device = openCameraTracked(manager, logicalId, handler, err);
+            }
             if (device == null) {
+                JSONObject r = new JSONObject();
+                r.put("error", "could not open the logical camera after 6 attempts"
+                        + (err.get() >= 0 ? " (device error " + err.get() + ")" : ""));
+                out.put(r);
                 return out;
             }
             final java.util.Map<String, ImageReader> readerFor = new java.util.LinkedHashMap<>();

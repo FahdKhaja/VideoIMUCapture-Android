@@ -605,8 +605,18 @@ public class CameraCaptureActivity extends AppCompatActivity {
         getIntent().removeExtra(StereoProbe.EXTRA_RUN);
         Log.i(TAG, "running stereo probe (no preview created this launch)");
         releaseCamera();
+        // Keep the screen on for the duration. On 2026-09-20 the phone dozed and locked
+        // twenty seconds into a probe; a locked device revokes the camera from an ordinary
+        // app ("disabled by policy"), every open for the next stage was refused, and the
+        // result file said nothing about why. The capture path already holds this flag while
+        // recording, for the same reason.
+        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         final Context appContext = getApplicationContext();
-        new Thread(() -> StereoProbe.run(appContext), "StereoProbe").start();
+        new Thread(() -> {
+            StereoProbe.run(appContext);
+            runOnUiThread(() -> getWindow().clearFlags(
+                    android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
+        }, "StereoProbe").start();
     }
 
     public void initializeCamera() {
