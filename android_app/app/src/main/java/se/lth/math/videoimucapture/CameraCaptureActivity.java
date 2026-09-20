@@ -21,6 +21,7 @@ import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
 
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.SurfaceTexture;
 import android.os.Bundle;
 import android.os.Handler;
@@ -136,6 +137,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
     // Whether the last volume-key press was used for exposure compensation (#28).
     private boolean mVolumeKeysConsumed = false;
     private static RecordingWriter sRecordingWriter = new RecordingWriter();
+    private StorageGuard mStorageGuard;
     private CaptureModeManager mCaptureModeManager;
 
     public CameraSettingsManager getmCameraSettingsManager() {
@@ -375,6 +377,8 @@ public class CameraCaptureActivity extends AppCompatActivity {
         mGnssLogger = new GnssLogger(this);
         mThermalLogger = new ThermalLogger(this);
         mCaptureModeManager = new CaptureModeManager(this);
+        mStorageGuard = new StorageGuard(new File(getResultRoot()));
+        mStorageGuard.setListener(this::onStorageCritical);
 
         if (savedInstanceState == null) {
             ToolBarFragment fragment = new ToolBarFragment();
@@ -582,6 +586,46 @@ public class CameraCaptureActivity extends AppCompatActivity {
         return getExternalFilesDir(null).getAbsolutePath();
     }
 
+    public StorageGuard getStorageGuard() {
+        return mStorageGuard;
+    }
+
+    /**
+     * The card is down to the reserve. End the capture NOW, while ending it is still
+     * possible -- the muxer's trailer, the closing RAW, the frame accounting and the manifest
+     * all have to be written, and none of them can be written onto a full card.
+     *
+     * Both controls are stopped, in that order, because either or both may be running and
+     * stopping only one would leave the other writing into the reserve this is protecting.
+     */
+    private void onStorageCritical(StorageGuard.Status status) {
+        Log.e(TAG, "storage critical with " + StorageGuard.describe(status.freeBytes)
+                + " free: ending the capture");
+        // Marked BEFORE the stop, because stopping is what seals the manifest and the receipt
+        // has to carry the reason. A session that is short because the card ran out and one the
+        // operator ended early look identical otherwise, and only one of them is a data problem.
+        if (mCaptureModeManager != null) {
+            mCaptureModeManager.noteStoppedForSpace();
+        }
+        CameraCaptureFragment frag = getmCameraCaptureFragment();
+        if (frag != null && frag.isRecording()) {
+            frag.clickToggleRecording(null);
+        }
+        if (mCaptureModeManager != null && mCaptureModeManager.isRunning()) {
+            mCaptureModeManager.onCaptureButton();
+        }
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Storage full — capture stopped")
+                .setMessage("Only " + StorageGuard.describe(status.freeBytes) + " left, so the "
+                        + "session was ended while it could still be closed properly. What was "
+                        + "recorded up to that point is intact.\n\nFree some space before the "
+                        + "next run.")
+                .setPositiveButton("Open the roll",
+                        (d, w) -> startActivity(new Intent(this, RollActivity.class)))
+                .setNegativeButton("OK", null)
+                .show();
+    }
+
     /**
      * Fire a still burst. Stills land in their own timestamped directory alongside video
      * recordings, with a video_meta.pb3 carrying one StillMetaData row per shot, so a
@@ -592,6 +636,26 @@ public class CameraCaptureActivity extends AppCompatActivity {
      *       --es still_mode exposure --ei still_shots 5 --ef still_stops 2.0 --ez still_raw true
      */
     public File newCaptureDir(String prefix) {
+        // THE PRE-FLIGHT CHECK, and it lives here because every session start in the app --
+        // video, stills run, OBJECT composite, manual burst -- comes through this one method,
+        // and every one of them already handles a null. Nothing has ever asked how much room
+        // was left: a WALK is hundreds of full-resolution JPEGs on top of a ~94 Mbit/s video
+        // stream, and the first anyone knew of a full card was at a desk afterwards.
+        File root = new File(getResultRoot());
+        if (!StorageGuard.enoughToStart(root)) {
+            long free = StorageGuard.freeBytes(root);
+            String msg = "Not enough room: " + StorageGuard.describe(free) + " free. "
+                    + "Free some space or delete sessions from the roll.";
+            Log.e(TAG, "refusing to start a session: " + msg);
+            runOnUiThread(() -> new androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("No room to record")
+                    .setMessage(msg)
+                    .setPositiveButton("Open the roll",
+                            (d, w) -> startActivity(new Intent(this, RollActivity.class)))
+                    .setNegativeButton("Not now", null)
+                    .show());
+            return null;
+        }
         java.text.SimpleDateFormat fmt =
                 new java.text.SimpleDateFormat("yyyy_MM_dd_HH_mm_ss", java.util.Locale.US);
         File dir = new File(getResultRoot(), prefix + "_" + fmt.format(new java.util.Date()));

@@ -1,5 +1,7 @@
 package se.lth.math.videoimucapture;
 
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import com.google.protobuf.Timestamp;
@@ -159,13 +161,32 @@ public class RecordingWriter implements Runnable{
 
     }
 
+    /** Told, on the main thread, when the file could not be written. */
+    public interface FailureListener {
+        void onWriteFailed(java.io.IOException cause);
+    }
+
+    private volatile FailureListener mFailureListener;
+
+    public void setFailureListener(FailureListener l) {
+        mFailureListener = l;
+    }
+
     public void stopRecording(){
+        // offer(), not put(). This is called from the main thread, and put() on a queue whose
+        // consumer has died is an ANR -- which is exactly the state a write failure used to
+        // leave things in. A full queue here means the writer is already gone or hopelessly
+        // behind, and in both cases the right move is to stop asking and let the file be
+        // whatever was flushed.
         try {
-            mQueue.put(mPoisonPill);
+            if (!mQueue.offer(mPoisonPill, 2, java.util.concurrent.TimeUnit.SECONDS)) {
+                Log.e(TAG, "writer did not take the stop within 2 s; abandoning the queue");
+                mIsRecording = false;
+            }
         } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             Log.d(TAG, "Interrupted in close.");
         }
-
     }
 
 
@@ -188,8 +209,30 @@ public class RecordingWriter implements Runnable{
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (IOException e) {
-            //TODO:SOMETHING USEFUL
-            Log.e(TAG,"Write error, SHOULD stop recording!!!!!" + e);
+            // A write failed -- a full card is the way this happens -- and what used to
+            // follow was worse than the lost bytes. This thread ended here while
+            // mIsRecording stayed TRUE, so queueData kept accepting samples into a queue
+            // nobody was draining. At 8192 messages it filled, and then put() blocked the
+            // sensor thread FOREVER: the IMU stream simply stopped, with no gap in the file
+            // to show for it because nothing was being written at all. Pressing stop then
+            // put the poison pill from the main thread into the same full queue and hung the
+            // app. The clip did not end, it thinned out and then froze.
+            //
+            // So: say we have stopped before anything else, which makes queueData a no-op
+            // and can never block a caller again, salvage what is on disk, and tell someone
+            // who can end the session properly.
+            mIsRecording = false;
+            Log.e(TAG, "write failed, recording stopped: " + e);
+            try {
+                mFileStream.flush();
+                mFileStream.close();
+            } catch (IOException io) {
+                Log.e(TAG, "and the salvage failed too: " + io);
+            }
+            final FailureListener listener = mFailureListener;
+            if (listener != null) {
+                new Handler(Looper.getMainLooper()).post(() -> listener.onWriteFailed(e));
+            }
         } catch (RuntimeException e) {
             // Nothing here is worth losing the recording over. An uncaught throw on this
             // thread reaches the default handler and kills the process, and the mp4 is then

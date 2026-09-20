@@ -207,6 +207,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // took -- a manifest is only worth having if nothing in it is left over.
         mShots = 0;
         mManifest = new SessionManifest(mActivity, dir, mMode.name(), mTestTag);
+        mManifest.noteFreeAtStart(StorageGuard.freeBytes(new File(mActivity.getResultRoot())));
         mManifest.noteVideoRequested();
         Camera2Proxy proxy = mActivity.getmCamera2Proxy();
         mVideoLockedRadiometry = androidx.preference.PreferenceManager
@@ -259,6 +260,13 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
      * button comes up reports a zero-length video that is about to exist, which is exactly
      * the false alarm this manifest is supposed to make impossible.
      */
+    /** Told by the storage guard that this session did not end because the operator said so. */
+    public void noteStoppedForSpace() {
+        if (mManifest != null) {
+            mManifest.noteStoppedForSpace();
+        }
+    }
+
     private void sealSession() {
         final SessionManifest manifest = mManifest;
         if (manifest == null) {
@@ -317,6 +325,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         }
         if (mManifest == null) {
             mManifest = new SessionManifest(mActivity, mRunDir, mMode.name(), mTestTag);
+            mManifest.noteFreeAtStart(StorageGuard.freeBytes(new File(mActivity.getResultRoot())));
         }
         mManifest.noteStillsRequested();
         mWriter = mActivity.getsRecordingWriter();
@@ -636,6 +645,18 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         }
         final RunState state =
                 new RunState(mRunning, mVideoActive, mCompositeActive, summary);
+        // The storage watch follows the session, and this is the one place that knows when a
+        // session begins and ends whichever control opened it. Free space is not checked while
+        // the app merely sits at the preview: nothing is being written then, and a statfs every
+        // two seconds for nothing is exactly the kind of idle cost #37 is about.
+        StorageGuard guard = mActivity.getStorageGuard();
+        if (guard != null) {
+            if (state.anyActive) {
+                guard.begin();
+            } else {
+                guard.end();
+            }
+        }
         mMain.post(() -> mStateListener.onRunStateChanged(state));
     }
 }

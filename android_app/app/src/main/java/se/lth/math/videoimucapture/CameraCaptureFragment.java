@@ -52,6 +52,12 @@ public class CameraCaptureFragment extends Fragment
     private AspectFrameLayout mAspectFrameLayout;
 
     private boolean mRecordingEnabled;      // controls button state
+
+    /** Whether the video recorder is running, for anything outside that needs to stop it. */
+    public boolean isRecording() {
+        return mRecordingEnabled;
+    }
+
     private FloatingActionButton mRecordingButton;
     private FloatingActionButton mWarningButton;
     private FloatingActionButton mCaptureButton;
@@ -696,7 +702,22 @@ public class CameraCaptureFragment extends Fragment
                         act.getmCamera2Proxy().periodicStereoPairs());
             }
         }
-        final String line = "|" + hold + smear + clock + pairs + ev + sfl + "|" + sexpotime + "|" + imuHz + "|" + heat;
+        // HOW MUCH LONGER THIS CAN GO ON. Free space in GB is a number the operator has to do
+        // arithmetic on, mid-walk, to get the only thing they actually want to know. The guard
+        // measures what this session is really consuming, so the readout can say it in minutes
+        // -- and minutes are what decides whether to turn back now or keep going.
+        String room = "";
+        if (act != null && act.getStorageGuard() != null
+                && act.getStorageGuard().isWatching()) {
+            StorageGuard.Status st = act.getStorageGuard().status();
+            if (st != null && st.secondsLeft >= 0) {
+                room = st.secondsLeft < 60
+                        ? String.format(Locale.getDefault(), "ROOM %ds|", st.secondsLeft)
+                        : String.format(Locale.getDefault(), "ROOM %dmin|", st.secondsLeft / 60);
+            }
+        }
+        final String line = "|" + hold + smear + room + clock + pairs + ev + sfl + "|"
+                + sexpotime + "|" + imuHz + "|" + heat;
 
         getActivity().runOnUiThread(() -> {
             if (mCaptureResultText != null) {

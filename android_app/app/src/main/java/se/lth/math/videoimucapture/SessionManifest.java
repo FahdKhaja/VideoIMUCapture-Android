@@ -53,6 +53,8 @@ public final class SessionManifest {
     private boolean mStillsRequested = false;
     private int mStillsFired = 0;
     private int mStereoPairsArmed = 0;
+    private long mFreeAtStartBytes = -1;
+    private boolean mStoppedForSpace = false;
 
     public SessionManifest(android.content.Context context, File dir, String mode,
                            String testTag) {
@@ -99,6 +101,21 @@ public final class SessionManifest {
         }
     }
 
+    /** Free bytes when the session opened, so a short session can explain itself. */
+    public void noteFreeAtStart(long bytes) {
+        mFreeAtStartBytes = bytes;
+    }
+
+    /**
+     * The session was ended by the storage guard rather than by the operator. Without this a
+     * walk that stopped itself is indistinguishable from one the operator ended early, and
+     * the difference decides whether the data is short because of the route or because of the
+     * card.
+     */
+    public void noteStoppedForSpace() {
+        mStoppedForSpace = true;
+    }
+
     /**
      * Measure the directory and write the manifest. Never throws: a session that has just
      * been shot must not be lost because its receipt could not be written.
@@ -137,6 +154,14 @@ public final class SessionManifest {
                 f.put("complete", frames.isComplete());
                 root.put("frame_records", f);
             }
+
+            JSONObject storage = new JSONObject();
+            if (mFreeAtStartBytes >= 0) {
+                storage.put("free_at_start_bytes", mFreeAtStartBytes);
+            }
+            storage.put("free_at_end_bytes", StorageGuard.freeBytes(mDir));
+            storage.put("stopped_for_space", mStoppedForSpace);
+            root.put("storage", storage);
 
             root.put("agrees", agrees(measured));
             root.put("summary", summary(measured, frames));
@@ -251,6 +276,9 @@ public final class SessionManifest {
         }
         if (frames != null && !frames.isComplete()) {
             sb.append(" — ").append(frames.totalDropped()).append(" frame records lost");
+        }
+        if (mStoppedForSpace) {
+            sb.append(" — ENDED EARLY: the card ran out");
         }
         return sb.toString();
     }
