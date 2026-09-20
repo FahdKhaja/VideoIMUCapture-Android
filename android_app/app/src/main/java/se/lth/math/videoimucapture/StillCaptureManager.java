@@ -721,6 +721,11 @@ public class StillCaptureManager {
             }
             copyBase(baseRequest, b, false);
             applyFullFieldOfView(b);
+            // Each lens delivers its OWN full array. The periodic path has asked for this
+            // since #36; the one-shot never did, so the extra lenses would have arrived at
+            // whatever crop the HAL chose and the recorded crop_region would have been the
+            // only warning. It is a geometry capture: the frames have to be the lens's own.
+            applyPhysicalFullArrays(b);
             for (ImageReader r : mLensReaders.values()) {
                 b.addTarget(r.getSurface());
             }
@@ -853,7 +858,12 @@ public class StillCaptureManager {
         RecordingProtos.StillMetaData.Builder b =
                 RecordingProtos.StillMetaData.newBuilder()
                         .setBurstId(burstId)
-                        .setBurstSize(2)
+                        // How many lenses this simultaneous capture actually had, not 2. It
+                        // was a constant because a simultaneous capture meant a pair; with
+                        // the all-lens set a burst carries one frame per configured lens, and
+                        // a reader joining frames by burst needs to know how many to expect
+                        // before it can notice that one is missing.
+                        .setBurstSize(Math.max(2, mLensReaders.size()))
                         .setBurstIndex(index)
                         .setKindValue(Mode.SINGLE.ordinal())
                         .setCaptureMode(mode.ordinal())
@@ -1026,7 +1036,11 @@ public class StillCaptureManager {
         if (Build.VERSION.SDK_INT < 28) {
             return;
         }
-        for (String pid : new String[]{sPhysUltrawide, sPhysMain}) {
+        // EVERY configured lens, not just the metric pair. A telephoto that comes back
+        // cropped is not a smaller picture, it is a picture whose focal length in pixels no
+        // longer follows from the factory intrinsics by the stream's scale factor -- and that
+        // scaling is the whole of how G1/G2 turn a disparity into a baseline in millimetres.
+        for (String pid : mLensReaders.keySet()) {
             Rect active = physicalActiveArray(pid);
             if (active != null) {
                 try {

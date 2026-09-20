@@ -333,6 +333,49 @@ public final class TestPlan {
                         "blur_budget_manual", false),
                 Streams.STILLS, CaptureModeManager.Mode.WALK));
 
+        // G1/G2 are a PAIR and they MEASURE THE BASELINES THE DEVICE WILL NOT STATE
+        // (ReconStab #9). Ids 6 and 7 report LENS_POSE_TRANSLATION [0, 0, 0]; only the
+        // ultrawide publishes an offset. But the phone already carries its own ruler -- the
+        // 18.02 mm between 2 and 5 is published -- and every lens fires at the same instant,
+        // so the rest can be measured against it rather than taken on faith.
+        //
+        // For a flat target at distance Z, disparity = f * B / Z with f known for every lens
+        // from the census. One distance gives each B directly. TWO distances give it as the
+        // slope of disparity against 1/Z, which is the version worth shooting: a line through
+        // the origin says the model holds, and a line that misses the origin says a focal
+        // length or a principal point is wrong and the single-distance answer would have
+        // absorbed that error silently.
+        //
+        // 1 m and 2 m because the numbers work there and every lens can focus: at 1 m the
+        // known pair should show ~22 px on the main camera and the periscope far more, both
+        // comfortably measurable; much closer and the telephotos will not focus, much further
+        // and the disparity disappears into the noise.
+        //
+        // OIS OFF IS NOT OPTIONAL HERE. A stabiliser moves the optical path between frames,
+        // which is exactly the quantity being measured. Distortion correction off for the
+        // same reason: the geometry has to be the lens's own.
+        String baselineShot = "SET THIS FIRST: Settings > Lenses in the session > All rear "
+                + "lenses, then leave the app and come back so the camera reopens.\n\nPut the "
+                + "phone on a tripod or wedge it against something solid, pointed square at a "
+                + "FLAT textured target — a newspaper, a brick wall, a poster with fine "
+                + "detail. Square on, not angled. The target must fill the 5x view, so it "
+                + "needs detail right in the middle of the frame.\n\nMeasure the distance with "
+                + "a tape and write it down; the measurement is only as good as that number.";
+        out.add(new Step("G1", "G1 - baselines, target at 1 m",
+                baselineShot + "\n\nTarget at ONE METRE.",
+                15, prefs("stereo_interval_s", 0, "lock_radiometry", true,
+                        "blur_budget_manual", false, "ois", false, "ois_data", false,
+                        "distortion_correction", false),
+                Streams.STILLS, CaptureModeManager.Mode.WALK));
+        out.add(new Step("G2", "G2 - baselines, target at 2 m",
+                baselineShot + "\n\nTarget at TWO METRES, same target, same phone position "
+                        + "otherwise. G1 and G2 together turn each baseline into the slope of "
+                        + "a line rather than one number that has to be trusted.",
+                15, prefs("stereo_interval_s", 0, "lock_radiometry", true,
+                        "blur_budget_manual", false, "ois", false, "ois_data", false,
+                        "distortion_correction", false),
+                Streams.STILLS, CaptureModeManager.Mode.WALK));
+
         // I1/I2 (ReconStab #63): what does batching the IMU cost, and what does it buy?
         //
         // Every listener used the three-argument registerListener until 2026-09-20, so the
