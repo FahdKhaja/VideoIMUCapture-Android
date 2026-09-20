@@ -30,7 +30,10 @@ public class TestPlanStateTest {
         final Map<String, Object> mMap = new HashMap<>();
 
         @Override public Map<String, ?> getAll() { return mMap; }
-        @Override public String getString(String k, String d) { return d; }
+        @Override public String getString(String k, String d) {
+            Object v = mMap.get(k);
+            return v instanceof String ? (String) v : d;
+        }
         @Override public Set<String> getStringSet(String k, Set<String> d) { return d; }
         @Override public int getInt(String k, int d) { return d; }
         @Override public float getFloat(String k, float d) { return d; }
@@ -164,6 +167,55 @@ public class TestPlanStateTest {
     public void shootingFromTheTopKeepsTheRestInOrder() {
         TestPlan.markDone(mPrefs, "M1");
         assertEquals("M2", TestPlan.outstanding(mPrefs).get(0).id);
+    }
+
+    /**
+     * The lens cells set their own lens set.
+     *
+     * They used to print an instruction telling the operator to go into Settings, flip it,
+     * and background the app so the camera would reopen. On 2026-09-20 that produced two L1
+     * runs in ninety seconds under two different configurations, both filed as L1. A cell
+     * whose conditions depend on the operator having read a paragraph is not a controlled
+     * test, and the instruction text is where that failure lives -- so this checks the pref,
+     * not the prose.
+     */
+    @Test
+    public void theLensCellsAskForTheLensSetThemselves() {
+        for (String id : new String[]{"L1", "G1", "G2"}) {
+            TestPlan.Step s = stepById(id);
+            assertEquals(id + " asks for every rear lens", "all", s.prefs.get("lens_set"));
+        }
+    }
+
+    @Test
+    public void aLensCellNeedsTheSessionRebuiltUnlessItIsAlreadyInForce() {
+        TestPlan.Step l1 = stepById("L1");
+        // The operator's phone is on the default pair set: the streams have to be rebuilt.
+        assertTrue("the streams are bound at session creation", l1.needsSessionRebuild(mPrefs));
+        mPrefs.edit().putString("lens_set", "all").apply();
+        assertFalse("already configured; rebuilding would cost a second for nothing",
+                l1.needsSessionRebuild(mPrefs));
+    }
+
+    @Test
+    public void anOrdinaryCellDoesNotRebuildTheSession() {
+        // Everything outside the declared session-level set reaches a live session through
+        // the request builder, and a needless rebuild is a second of dead time per cell.
+        for (TestPlan.Step s : TestPlan.steps()) {
+            if (!s.prefs.containsKey("lens_set")) {
+                assertFalse(s.id + " has no session-level setting to apply",
+                        s.needsSessionRebuild(mPrefs));
+            }
+        }
+    }
+
+    private static TestPlan.Step stepById(String id) {
+        for (TestPlan.Step s : TestPlan.steps()) {
+            if (s.id.equals(id)) {
+                return s;
+            }
+        }
+        throw new AssertionError("no cell " + id);
     }
 
     @Test

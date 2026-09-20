@@ -285,6 +285,9 @@ public class CameraCaptureActivity extends AppCompatActivity {
         }
         final android.content.SharedPreferences sp =
                 androidx.preference.PreferenceManager.getDefaultSharedPreferences(this);
+        // Asked BEFORE the settings are written, because the question is whether this cell
+        // changes one of them.
+        final boolean rebuild = step.needsSessionRebuild(sp) && mCamera2Proxy != null;
         final java.util.Map<String, Object> previous = TestPlan.apply(sp, step);
         // OIS and its data mode live in the capture REQUEST, not in the recording, so a change
         // has to be pushed to the running session or the clip records the previous state while
@@ -292,6 +295,16 @@ public class CameraCaptureActivity extends AppCompatActivity {
         // finding in itself.
         if (mCamera2Proxy != null) {
             mCamera2Proxy.reapplyCameraSettings();
+        }
+        // ...and the lens set does not live in the request at all: it decides which streams the
+        // session was built with. A cell that asks for it has to rebuild the session, or it
+        // shoots the previous configuration and files it under this cell's name. The two L1
+        // runs on 2026-09-20 are what that looks like -- one on the pair, one on all four, both
+        // labelled L1, neither receipt saying which.
+        if (rebuild) {
+            android.widget.Toast.makeText(this, step.id + ": rebuilding the camera session",
+                    android.widget.Toast.LENGTH_SHORT).show();
+            mCamera2Proxy.reconfigureLensStreams();
         }
         mCaptureModeManager.setTestTag(step.id);
         // A cell that names a mode sets it, because the mode is in-memory state rather than a
@@ -329,6 +342,12 @@ public class CameraCaptureActivity extends AppCompatActivity {
                     TestPlan.restore(sp, previous);
                     if (mCamera2Proxy != null) {
                         mCamera2Proxy.reapplyCameraSettings();
+                        // Put the streams back too. Restoring the preference alone would leave
+                        // the operator's next capture running on the cell's configuration,
+                        // which is the same bug pointed the other way.
+                        if (rebuild) {
+                            mCamera2Proxy.reconfigureLensStreams();
+                        }
                     }
                     // Ticked off here, at the end of the cell that actually ran, so the list
                     // empties as the work is done rather than as it is started. A cell that
@@ -342,7 +361,10 @@ public class CameraCaptureActivity extends AppCompatActivity {
                 }, end);
             }
         };
-        h.post(tick);
+        // The rebuilt session is not usable the instant reconfigureLensStreams returns:
+        // createCaptureSession is asynchronous and the preview has to come back before the
+        // cell presses anything at it.
+        h.postDelayed(tick, rebuild ? Camera2Proxy.SESSION_REBUILD_MS : 0L);
     }
 
     /**

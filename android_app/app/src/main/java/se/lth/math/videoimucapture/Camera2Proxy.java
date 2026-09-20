@@ -959,6 +959,52 @@ public class Camera2Proxy {
         mPreviewSurfaceTexture = surfaceTexture;
     }
 
+    /**
+     * Rebuild the capture session, so a SESSION-LEVEL setting can take effect without the
+     * operator leaving the app and coming back.
+     *
+     * Which streams exist is fixed when createCaptureSession runs and there is no adding one
+     * to a live session. Until now that meant the lens-set cells could not set their own
+     * setting: L1 and G1/G2 told the operator to go into Settings, flip it, background the
+     * app and return, and the cell then recorded whatever was actually in force rather than
+     * what it asked for. On 2026-09-20 that failed in both directions in the space of two
+     * minutes -- one L1 ran on the pair because the camera had not been cycled, the next ran
+     * on the all-lens set and lost three of seven stills -- and both receipts said "agrees".
+     * A cell that cannot set its own conditions is not a test, it is a suggestion.
+     *
+     * The DEVICE stays open. Only the session, the still readers and the physical streams are
+     * rebuilt, which is the part that reads the preference; the preview SurfaceTexture is
+     * still bound and is reused as-is. Takes a few hundred milliseconds, so the caller waits
+     * before pressing anything.
+     */
+    public void reconfigureLensStreams() {
+        if (mCameraDevice == null) {
+            Log.w(TAG, "reconfigureLensStreams: no camera device open");
+            return;
+        }
+        Log.i(TAG, "rebuilding the capture session to pick up a session-level setting");
+        mPeriodicStereo = false;
+        if (mStillCaptureManager != null) {
+            mStillCaptureManager.stopPeriodicStereo();
+        }
+        if (mCaptureSession != null) {
+            try {
+                mCaptureSession.close();
+            } catch (RuntimeException e) {
+                Log.w(TAG, "closing the old session: " + e);
+            }
+            mCaptureSession = null;
+        }
+        if (mStillCaptureManager != null) {
+            mStillCaptureManager.release();
+            mStillCaptureManager = null;
+        }
+        initPreviewRequest();
+    }
+
+    /** How long {@link #reconfigureLensStreams} needs before the session is usable again. */
+    public static final long SESSION_REBUILD_MS = 1200L;
+
     private void initPreviewRequest() {
         try {
             mPreviewRequestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
@@ -1052,6 +1098,16 @@ public class Camera2Proxy {
             return;
         }
         try {
+            // Built HERE, not replayed from the snapshot taken at onConfigured. That snapshot
+            // is the bare preview: no physical stereo streams, none of the keys the run has
+            // set since. startPeriodicStereo replaces mPreviewRequestBuilder with a
+            // TEMPLATE_RECORD request carrying both physical streams, and a repeating request
+            // is the ONLY thing feeding the periodic path -- so any startPreview() after it
+            // silently ended the pairs for the rest of the clip and left the receipt saying
+            // the run had a metric anchor it stopped collecting. The idle-sleep timer
+            // (idle_sleep_s, 30 s by default) calls exactly this pair of methods, which puts
+            // it inside every walk longer than its timeout.
+            mPreviewRequest = mPreviewRequestBuilder.build();
             mCaptureSession.setRepeatingRequest(
                     mPreviewRequest, mSessionCaptureCallback, mBackgroundHandler);
         } catch (CameraAccessException | IllegalStateException e) {

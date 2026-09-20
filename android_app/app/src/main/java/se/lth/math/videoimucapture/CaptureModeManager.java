@@ -285,6 +285,17 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         }
     }
 
+    /**
+     * Record which lenses the session was built with.
+     *
+     * Not which it used: a session built with four physical streams that produced two files
+     * looks, in a receipt that only counts files, exactly like a normal metric-pair run.
+     */
+    private void noteLensSet(SessionManifest manifest) {
+        manifest.noteLensSet(StillCaptureManager.allLensShot() ? "all" : "pair",
+                StillCaptureManager.activeLensIds().size());
+    }
+
     private void sealSession() {
         final SessionManifest manifest = mManifest;
         if (manifest == null) {
@@ -296,6 +307,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             manifest.noteStereoPairs(proxy.periodicStereoPairs());
         }
         manifest.noteStillsFired(mShots);
+        noteLensSet(manifest);
         final RecordingWriter writer = mActivity.getsRecordingWriter();
         // The same delay that lets the mp4 finalise is what makes the encoder's verdict
         // available: the trailer is written during release(), on the encoder thread, after the
@@ -580,6 +592,18 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // local to the composite rather than the field the two continuous paths share.
         final SessionManifest manifest = new SessionManifest(mActivity, dir, mMode.name(), mTestTag);
         manifest.noteStillsRequested();
+        // The same notes sealSession() applies to the two continuous paths. OBJECT writes its
+        // own manifest and therefore never got any of them: the 2026-09-20 M5 receipt claimed
+        // zero stills fired against eleven on the card, reported thermal status -1 for a
+        // composite that runs the sensor flat out for fifteen seconds, and carried no battery
+        // reading at either end. A receipt for the heaviest capture in the app was the only
+        // one that could not say what the capture cost.
+        manifest.noteFreeAtStart(StorageGuard.freeBytes(new File(mActivity.getResultRoot())));
+        manifest.noteBatteryAtStart(BatteryGuard.percent(mActivity));
+        noteLensSet(manifest);
+        // Counted as each stage is ISSUED rather than assumed from the recipe, so a composite
+        // that is cut short reports what it actually asked for.
+        final int[] fired = {0};
         RecordingWriter writer = mActivity.getsRecordingWriter();
         boolean owns = false;
         if (!writer.isRecording()) {
@@ -618,16 +642,19 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // which is the whole reason that version came back with five identical pictures.
         notifyState("OBJECT · focus stack");
         proxy.captureFocusStack(5, false, dir, writer);
+        fired[0] += 5;
 
         mMain.postDelayed(() -> {
             notifyState("OBJECT · exposure bracket");
             proxy.captureStills(StillCaptureManager.Mode.EXPOSURE_BRACKET, 5, 2.0f,
                     false, dir, writer);
+            fired[0] += 5;
         }, 4000L);
 
         mMain.postDelayed(() -> {
             notifyState("OBJECT · full-quality RAW");
             proxy.captureStills(StillCaptureManager.Mode.SINGLE, 1, 0f, true, dir, writer);
+            fired[0] += 1;
         }, 7000L);
 
         // The stereo pair. Last, because it is the one stage whose value does not
@@ -658,6 +685,13 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             mCompositeActive = false;
             notifyState(hasStereo ? "OBJECT complete + stereo" : "OBJECT complete");
             manifest.noteStereoPairs(hasStereo ? 1 : 0);
+            manifest.noteStillsFired(fired[0]);
+            if (mActivity.getmThermalLogger() != null) {
+                manifest.noteWorstThermalStatus(mActivity.getmThermalLogger().worstStatus());
+            }
+            if (mActivity.getBatteryGuard() != null) {
+                manifest.noteBatteryAtEnd(mActivity.getBatteryGuard().percentNow());
+            }
             mMain.postDelayed(() -> manifest.write(writer.accounting()), 1200L);
             Log.i(TAG, "object composite complete: " + dir);
         }, hasStereo ? 15500L : 10500L);   // stereo adds a warm-up before its capture

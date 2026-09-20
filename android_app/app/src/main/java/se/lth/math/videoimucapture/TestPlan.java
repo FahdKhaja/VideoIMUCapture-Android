@@ -80,7 +80,35 @@ public final class TestPlan {
         public boolean isRequested() {
             return REQUESTED.contains(id);
         }
+
+        /**
+         * Whether running this cell needs the capture session rebuilt before it starts.
+         *
+         * True when the cell asks for a session-level setting that is not already in force.
+         * Everything else in {@link #prefs} reaches a live session through the request
+         * builder; these do not, because they decide which streams EXIST.
+         */
+        public boolean needsSessionRebuild(SharedPreferences sp) {
+            for (String key : SESSION_LEVEL) {
+                Object want = prefs.get(key);
+                if (want instanceof String && !want.equals(sp.getString(key, null))) {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
+
+    /**
+     * Preferences that are read when the capture session is BUILT, not when a request is sent.
+     *
+     * Exactly one key, and it is listed rather than inferred because getting this wrong is
+     * silent in both directions: a session-level key treated as ordinary takes effect on the
+     * NEXT run and the cell records the previous configuration under this cell's name, while
+     * an ordinary key listed here costs a needless session rebuild. Anything added here must
+     * genuinely change which streams the session carries.
+     */
+    private static final String[] SESSION_LEVEL = {"lens_set"};
 
     /**
      * The cells currently being asked for: the standing request, in one place.
@@ -484,20 +512,28 @@ public final class TestPlan {
         // published separation. What they are is the same instant at 7.9 mm and 18.6 mm
         // beside it, which is a different thing to have and worth having on purpose.
         //
-        // THE LENS SET IS A SESSION SETTING. Streams are bound when the capture session is
-        // created and there is no adding one to a live session, so this cell cannot set it
-        // the way the others set theirs -- it has to be in place before the camera opens.
+        // THE LENS SET IS A SESSION SETTING, and the cell sets it anyway. Streams are bound
+        // when the capture session is created, so this one cannot take effect the way the
+        // others do -- but the session can be REBUILT, which is what runTestStep now does
+        // before the countdown (see SESSION_LEVEL and Camera2Proxy.reconfigureLensStreams).
+        //
+        // It used to say "go into Settings and flip it, then background the app". That is why
+        // the first two attempts at this cell on 2026-09-20 produced no finding: one ran on
+        // the metric pair because the camera had not been cycled and reported 27 clean stills,
+        // the next ran on the all-lens set and lost three of seven stills with no stereo at
+        // all. Two runs, two different configurations, one cell id, and nothing in either
+        // receipt said which had been in force.
         out.add(new Step("L1", "L1 - every rear lens, one instant",
-                "SET THIS FIRST: Settings > Lenses in the session > All rear lenses, then "
-                        + "leave the app and come back so the camera reopens. The cell cannot "
-                        + "do it for you: the streams are fixed when the session is built.\n\n"
-                        + "Then put the phone on something steady, pointed at a scene with "
-                        + "detail at several distances, and do not touch it.\n\nPASS = four "
-                        + "stereo_ files sharing one burst id — uw, main, phys6, phys7 — and "
-                        + "lenses_in_widest_capture = 4 in the manifest. Fewer means a lens "
-                        + "was configured and did not deliver, which is the finding.",
+                "The cell sets the lens set and rebuilds the camera session itself; there is "
+                        + "nothing to set by hand.\n\nPut the phone on something steady, "
+                        + "pointed at a scene with detail at several distances, and do not "
+                        + "touch it.\n\nPASS = four stereo_ files sharing one burst id — uw, "
+                        + "main, phys6, phys7 — and lenses_in_widest_capture = 4 in the "
+                        + "manifest. Fewer means a lens was configured and did not deliver, "
+                        + "which is the finding. The manifest now records the lens set it was "
+                        + "shot with, so a short count cannot be mistaken for a pair run.",
                 20, prefs("stereo_interval_s", 0, "lock_radiometry", true,
-                        "blur_budget_manual", false),
+                        "blur_budget_manual", false, "lens_set", "all"),
                 Streams.STILLS, CaptureModeManager.Mode.WALK));
 
         // G1/G2 are a PAIR and they MEASURE THE BASELINES THE DEVICE WILL NOT STATE
@@ -521,8 +557,8 @@ public final class TestPlan {
         // OIS OFF IS NOT OPTIONAL HERE. A stabiliser moves the optical path between frames,
         // which is exactly the quantity being measured. Distortion correction off for the
         // same reason: the geometry has to be the lens's own.
-        String baselineShot = "SET THIS FIRST: Settings > Lenses in the session > All rear "
-                + "lenses, then leave the app and come back so the camera reopens.\n\nPut the "
+        String baselineShot = "The cell sets the lens set and rebuilds the camera session "
+                + "itself; there is nothing to set by hand.\n\nPut the "
                 + "phone on a tripod or wedge it against something solid, pointed square at a "
                 + "FLAT textured target — a newspaper, a brick wall, a poster with fine "
                 + "detail. Square on, not angled. The target must fill the 5x view, so it "
@@ -532,7 +568,7 @@ public final class TestPlan {
                 baselineShot + "\n\nTarget at ONE METRE.",
                 15, prefs("stereo_interval_s", 0, "lock_radiometry", true,
                         "blur_budget_manual", false, "ois", false, "ois_data", false,
-                        "distortion_correction", false),
+                        "distortion_correction", false, "lens_set", "all"),
                 Streams.STILLS, CaptureModeManager.Mode.WALK));
         out.add(new Step("G2", "G2 - baselines, target at 2 m",
                 baselineShot + "\n\nTarget at TWO METRES, same target, same phone position "
@@ -540,7 +576,7 @@ public final class TestPlan {
                         + "a line rather than one number that has to be trusted.",
                 15, prefs("stereo_interval_s", 0, "lock_radiometry", true,
                         "blur_budget_manual", false, "ois", false, "ois_data", false,
-                        "distortion_correction", false),
+                        "distortion_correction", false, "lens_set", "all"),
                 Streams.STILLS, CaptureModeManager.Mode.WALK));
 
         // I1/I2 (ReconStab #63): what does batching the IMU cost, and what does it buy?

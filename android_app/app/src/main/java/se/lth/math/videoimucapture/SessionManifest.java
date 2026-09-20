@@ -62,6 +62,8 @@ public final class SessionManifest {
     private boolean mStoppedForBattery = false;
     private int mBatteryAtStart = -1;
     private int mBatteryAtEnd = -1;
+    private String mLensSet = null;
+    private int mLensesConfigured = -1;
 
     public SessionManifest(android.content.Context context, File dir, String mode,
                            String testTag) {
@@ -123,6 +125,21 @@ public final class SessionManifest {
         if (pairs > mStereoPairsArmed) {
             mStereoPairsArmed = pairs;
         }
+    }
+
+    /**
+     * Which lenses this session was BUILT with, as opposed to how many delivered.
+     *
+     * Without it an all-lens run that produced two files and a pair run that produced two
+     * files are the same receipt, and on 2026-09-20 that is exactly what happened: two L1
+     * runs ninety seconds apart, one on the metric pair and one on all four physicals,
+     * identical-looking manifests, and no way afterwards to say which was which. The count of
+     * configured lenses is also what makes a shortfall legible -- four configured and two
+     * delivered is a finding; two configured and two delivered is a normal clip.
+     */
+    public void noteLensSet(String set, int configured) {
+        mLensSet = set;
+        mLensesConfigured = configured;
     }
 
     /** Free bytes when the session opened, so a short session can explain itself. */
@@ -197,6 +214,10 @@ public final class SessionManifest {
             expected.put("stills", mStillsRequested);
             expected.put("stills_fired", mStillsFired);
             expected.put("stereo_pairs_armed", mStereoPairsArmed);
+            if (mLensSet != null) {
+                expected.put("lens_set", mLensSet);
+                expected.put("lenses_configured", mLensesConfigured);
+            }
             root.put("expected", expected);
 
             JSONObject measured = measure();
@@ -271,7 +292,12 @@ public final class SessionManifest {
         // recording whose trailer was never written is exactly the right size and completely
         // unreadable, so it is reported as NOT video -- because for every purpose downstream
         // it is not.
-        if (mVideoFileComplete != null) {
+        // Only when THIS session asked for video. The encoder's verdict is a static left by
+        // the last clip, and a stills run that reports "video_file_complete: true" is quoting
+        // a different session's mp4 -- which is what the PANO and L1 receipts did on
+        // 2026-09-20, both of them describing a video recorded minutes earlier in another
+        // directory. A field that is silently about someone else is worse than no field.
+        if (mVideoRequested && mVideoFileComplete != null) {
             m.put("video_file_complete", mVideoFileComplete);
             if (hasVideo && !mVideoFileComplete) {
                 m.put("video", false);
@@ -341,15 +367,39 @@ public final class SessionManifest {
         return m;
     }
 
-    /** True when nothing the capture path asked for is missing from the directory. */
+    /**
+     * True when nothing the capture path asked for is missing from the directory.
+     *
+     * This used to ask whether ANY still had landed, which is a much weaker question than it
+     * looks. On 2026-09-20 a run fired seven shots, four reached the card, and the receipt
+     * said "agrees": three pictures went missing and the one file whose entire job is to
+     * notice that reported a clean session. Counting is the whole point -- the capture path
+     * already knows how many it asked for, and the directory already knows how many arrived.
+     *
+     * The same for lenses. A session built with four physical streams that delivers two is
+     * not a session that worked; it is the all-lens shot half failing, which is precisely the
+     * finding L1 exists to produce.
+     */
     private boolean agrees(JSONObject measured) {
         if (mVideoRequested != measured.optBoolean("video", false)) {
             return false;
         }
-        if (mStillsRequested && measured.optInt("stills_jpg", 0) == 0) {
+        if (mStillsRequested && shortfall(measured) > 0) {
+            return false;
+        }
+        if (mLensesConfigured > 0 && measured.optInt("stereo_bursts_seen", 0) > 0
+                && measured.optInt("lenses_in_widest_capture", 0) < mLensesConfigured) {
             return false;
         }
         return mStereoPairsArmed <= measured.optInt("stereo_pairs_complete", 0);
+    }
+
+    /** How many stills were asked for and never reached the card. */
+    private int shortfall(JSONObject measured) {
+        if (mStillsFired <= 0) {
+            return 0;
+        }
+        return Math.max(0, mStillsFired - measured.optInt("stills_jpg", 0));
     }
 
     /**
@@ -375,6 +425,18 @@ public final class SessionManifest {
         sb.append(pairs > 0
                 ? ", " + pairs + " stereo pairs (metric scale)"
                 : ", no stereo pair (NO METRIC SCALE)");
+        int missing = shortfall(measured);
+        if (missing > 0) {
+            sb.append(" — ").append(missing).append(" OF ").append(mStillsFired)
+                    .append(" STILLS NEVER REACHED THE CARD");
+        }
+        if (mLensesConfigured > 0 && measured.optInt("stereo_bursts_seen", 0) > 0) {
+            int got = measured.optInt("lenses_in_widest_capture", 0);
+            if (got < mLensesConfigured) {
+                sb.append(" — ").append(mLensesConfigured).append(" lenses configured, ")
+                        .append(got).append(" delivered");
+            }
+        }
         if (measured.optLong("video_unplayable_bytes", 0) > 0) {
             sb.append(" — the mp4 HAS NO TRAILER AND WILL NOT PLAY");
         } else if (mVideoRequested && !hasVideo) {

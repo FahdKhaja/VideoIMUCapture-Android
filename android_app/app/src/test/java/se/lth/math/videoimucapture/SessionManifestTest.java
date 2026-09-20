@@ -167,6 +167,127 @@ public class SessionManifestTest {
         assertTrue(root.getString("summary").contains("5 frame records lost"));
     }
 
+    /**
+     * The 2026-09-20 L1 failure, which the receipt of the day called a clean session.
+     *
+     * Seven shots were asked for and four reached the card. The old check asked only whether
+     * ANY still had landed, so three missing pictures produced "agrees": true and a summary
+     * that read like a normal run. Nothing else in the capture would have told the operator.
+     */
+    @Test
+    public void stillsThatNeverLandedAreCountedAndDisagree() throws Exception {
+        File dir = mFolder.newFolder("walk_2026_09_20_17_48_53");
+        for (int i = 0; i < 4; i++) {
+            touch(dir, "still_" + i + "_00.jpg", 16);
+        }
+        SessionManifest m = manifest(dir, "WALK");
+        m.noteStillsRequested();
+        m.noteStillsFired(7);
+        m.write(null);
+
+        JSONObject root = read(dir);
+        assertEquals(4, root.getJSONObject("measured").getInt("stills_jpg"));
+        assertEquals(7, root.getJSONObject("expected").getInt("stills_fired"));
+        assertFalse("four of seven is not agreement", root.getBoolean("agrees"));
+        assertTrue(root.getString("summary"),
+                root.getString("summary").contains("3 OF 7 STILLS NEVER REACHED THE CARD"));
+    }
+
+    @Test
+    public void everyStillLandingStillAgrees() throws Exception {
+        // The counting check must not cry wolf on the normal case, which is every other
+        // session shot that day: fired and measured equal, and the run reads clean.
+        File dir = mFolder.newFolder("walk_ok");
+        for (int i = 0; i < 9; i++) {
+            touch(dir, "still_" + i + "_00.jpg", 16);
+        }
+        SessionManifest m = manifest(dir, "WALK");
+        m.noteStillsRequested();
+        m.noteStillsFired(9);
+        m.write(null);
+        assertTrue(read(dir).getBoolean("agrees"));
+    }
+
+    /**
+     * An all-lens session that delivered a pair.
+     *
+     * Two L1 runs ninety seconds apart, one built on the metric pair and one on all four
+     * physicals, produced manifests that could not be told apart. The lens set the session was
+     * BUILT with is the missing half: without it, two delivered lenses is just a normal clip.
+     */
+    @Test
+    public void anAllLensSessionThatDeliversAPairSaysSo() throws Exception {
+        File dir = mFolder.newFolder("walk_all_lens");
+        touch(dir, "stereo_111_uw.jpg", 16);
+        touch(dir, "stereo_111_main.jpg", 16);
+        SessionManifest m = manifest(dir, "WALK");
+        m.noteStillsRequested();
+        m.noteLensSet("all", 4);
+        m.write(null);
+
+        JSONObject root = read(dir);
+        assertEquals("all", root.getJSONObject("expected").getString("lens_set"));
+        assertEquals(4, root.getJSONObject("expected").getInt("lenses_configured"));
+        assertEquals(2, root.getJSONObject("measured").getInt("lenses_in_widest_capture"));
+        assertFalse("half the lenses are missing", root.getBoolean("agrees"));
+        assertTrue(root.getString("summary"),
+                root.getString("summary").contains("4 lenses configured, 2 delivered"));
+    }
+
+    @Test
+    public void aPairSessionThatDeliversAPairIsFine() throws Exception {
+        File dir = mFolder.newFolder("walk_pair");
+        touch(dir, "stereo_111_uw.jpg", 16);
+        touch(dir, "stereo_111_main.jpg", 16);
+        SessionManifest m = manifest(dir, "WALK");
+        m.noteStillsRequested();
+        m.noteLensSet("pair", 2);
+        m.write(null);
+
+        JSONObject root = read(dir);
+        assertTrue(root.getBoolean("agrees"));
+        assertFalse(root.getString("summary").contains("configured"));
+    }
+
+    /**
+     * The encoder's verdict is a static, and a stills run must not quote it.
+     *
+     * The PANO and L1 receipts of 2026-09-20 both carried "video_file_complete": true while
+     * reporting zero video bytes. They were describing a clip recorded minutes earlier in a
+     * different directory: clearLastFileVerdict() runs when a VIDEO session opens, and a
+     * stills run never opens one.
+     */
+    @Test
+    public void aStillsRunDoesNotQuoteTheLastClipsVerdict() throws Exception {
+        File dir = mFolder.newFolder("pano_2026_09_20_17_46_38");
+        touch(dir, "still_0_00.jpg", 16);
+        SessionManifest m = manifest(dir, "PANO");
+        m.noteStillsRequested();
+        m.noteStillsFired(1);
+        m.noteVideoFileComplete(Boolean.TRUE);   // left over from the previous clip
+        m.write(null);
+
+        JSONObject measured = read(dir).getJSONObject("measured");
+        assertFalse("no video was requested, so there is no verdict to report",
+                measured.has("video_file_complete"));
+        assertFalse(measured.getBoolean("video"));
+    }
+
+    @Test
+    public void aVideoRunStillReportsItsOwnVerdict() throws Exception {
+        File dir = mFolder.newFolder("walk_with_video");
+        touch(dir, "video_recording.mp4", 4096);
+        SessionManifest m = manifest(dir, "WALK");
+        m.noteVideoRequested();
+        m.noteVideoFileComplete(Boolean.FALSE);
+        m.write(null);
+
+        JSONObject root = read(dir);
+        assertFalse(root.getJSONObject("measured").getBoolean("video_file_complete"));
+        assertEquals(4096, root.getJSONObject("measured").getLong("video_unplayable_bytes"));
+        assertTrue(root.getString("summary").contains("NO TRAILER"));
+    }
+
     @Test
     public void anUnwritableDirectoryDoesNotThrow() {
         // A session that has just been shot must not be lost because its receipt could not be
