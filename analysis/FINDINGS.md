@@ -259,11 +259,15 @@ And one the receipt did not catch: the 18:53 L1 said `agrees: true` while logcat
   merged as v0.21. Not done, on purpose: `stereo/` and `session/` packages. Those classes call
   back into the capture core, so the move means widening a few dozen members to public across
   a circular boundary.
-- **A pair sequence under a joining video** (2026-09-21 §3): fixed in `724a55f` -- the recording
-  takes the repeating request, the sequence ends, and the receipt says `stereo_sequence_cut`.
-  108 host tests pass. **NOT yet run on the phone**: it came off adb before M3 could be
-  re-driven. M3 on the all-lens set is the cell; it should read "pair sequence ended at N of
-  6 (video joined)", agree, and lose no frame rows after the first second. The single-pair
-  path changed with it and no cell reaches it while `lens_set` is "all".
+- **A pair sequence under a joining video** (2026-09-21 §3): fixed in `724a55f` and verified on
+  the phone on v0.21 (`3dad053`, session `M3f`). The sequence ended at 2 of 6 when the video
+  joined, the receipt carries `stereo_sequence_cut` and agrees, the stillness trigger resumed
+  at once (13 stills against 7), and the frame rows lost fell from 15 to 3. The 3 that remain
+  are ONE hole, frames 4-6 at +0.10 s: the restore is issued before the recording starts but
+  takes about four frames to pass through the pipeline, so the clip's first four frames are
+  still warm-up frames and the swap lands just inside it. Closing that needs the recording's
+  first frame held ~0.3 s after the restore whenever a warm-up was cancelled. Not done. The
+  start-edge loss of frame 0 did not occur in this clip. The single-pair path changed with
+  the fix and is still unverified: no cell reaches it while `lens_set` is "all".
 - **Periodic pairs with the per-physical crop left unset** (2026-09-21 §5): does the row then
   say 1.4x? One W-style cell would answer it.
