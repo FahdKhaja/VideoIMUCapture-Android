@@ -38,6 +38,8 @@ import androidx.fragment.app.Fragment;
 
 import com.google.android.material.appbar.MaterialToolbar;
 
+import se.lth.math.videoimucapture.probe.StereoProbe;
+
 import java.io.File;
 import java.io.IOException;
 import java.lang.ref.WeakReference;

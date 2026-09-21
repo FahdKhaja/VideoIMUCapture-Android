@@ -155,10 +155,14 @@ And one the receipt did not catch: the 18:53 L1 said `agrees: true` while logcat
 - **Downstream**: the crop finding is written up on ReconStab #6 and the N1/N2 numbers on
   ReconStab #55 (2026-09-21). Still owed there: N1/N2 scored by the matcher on a real route,
   and a per-session effective focal for every archive pair.
-- **Code structure**: a modularization pass is due (asked for 2026-09-20). The day's fixes kept
-  landing in the same four files. Natural cuts: a `stereo/` package (one-shot, periodic,
-  sequence, metadata rows) out of `StillCaptureManager`; a `session/` package (manifest,
-  guards, seal, run state) out of `CaptureModeManager` and the activity; `Camera2Proxy`'s
-  warm-up and request-swap logic into one class with one restore-preview path; the three
-  probes in `StereoProbe` into their own package. Behaviour identical; the host test suite
-  plus the M1-M6 and L1 cells are the regression net.
+- **Code structure**: the modularization pass asked for on 2026-09-20 was done on 2026-09-21
+  (branch `modularize`) and **has not been run on the phone**. 106 host tests pass and the
+  APK assembles, but the host suite cannot see a camera. Before it is merged, from a still
+  phone with `tools/drive_cell.ps1`: M1-M6 (the two buttons, both orderings, the composite),
+  L1 on the all-lens set (the pair sequence and the one restore-preview path), one W or N
+  cell (periodic pairs inside a video), and the stereo probe once (it moved package).
+  Receipts should agree and rows should read as they did on `7e316fd`; log tags changed
+  (`StereoCapture`, `StereoRequests`, `LensRoles`, `FocusStack`), messages did not.
+  Deliberately NOT done: `stereo/` and `session/` packages. Those classes call back into
+  the capture core, so moving them means widening a few dozen members to public across a
+  circular boundary -- worth doing, but not stacked on a refactor nobody has yet watched run.

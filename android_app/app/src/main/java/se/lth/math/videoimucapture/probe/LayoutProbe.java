@@ -1,4 +1,4 @@
-package se.lth.math.videoimucapture;
+package se.lth.math.videoimucapture.probe;
 
 import android.graphics.ImageFormat;
 import android.hardware.camera2.CameraAccessException;

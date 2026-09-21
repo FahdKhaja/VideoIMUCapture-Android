@@ -1,4 +1,4 @@
-package se.lth.math.videoimucapture;
+package se.lth.math.videoimucapture.probe;
 
 import android.content.Context;
 import android.hardware.camera2.CameraCharacteristics;
