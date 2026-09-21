@@ -314,7 +314,7 @@ public class CameraCaptureFragment extends Fragment
      * left "5 shots" sitting where the mode should be after a run ended — the state
      * readout permanently replaced by the last thing that happened to it.
      */
-    private void onCaptureRunState(CaptureModeManager.RunState state) {
+    private void onCaptureRunState(RunState state) {
         if (mCaptureButton != null) {
             // The icon says what THIS button does, not whether the phone is busy. During a
             // plain video clip the capture button starts a stills run, so it must not wear a
@@ -543,9 +543,7 @@ public class CameraCaptureFragment extends Fragment
 
         mRenderer.resetOutputFiles(outputFile, recordingWriter); // this will not cause sync issues
         if (writerWasIdle) {
-            getmImuManager().startRecording(recordingWriter);
-            ((CameraCaptureActivity) getActivity()).getmGnssLogger().startRecording(recordingWriter);
-            ((CameraCaptureActivity) getActivity()).getmThermalLogger().startRecording(recordingWriter);
+            ((CameraCaptureActivity) getActivity()).startSensorStreams(recordingWriter);
         }
 
         if (camera2Proxy != null) {
@@ -631,9 +629,7 @@ public class CameraCaptureFragment extends Fragment
         boolean stillsRunning = modes.isRunning();
         modes.endVideoSession();
         if (!stillsRunning) {
-            getmImuManager().stopRecording();
-            ((CameraCaptureActivity) getActivity()).getmGnssLogger().stopRecording();
-            ((CameraCaptureActivity) getActivity()).getmThermalLogger().stopRecording();
+            ((CameraCaptureActivity) getActivity()).stopSensorStreams();
         }
 
         mGLView.queueEvent(new Runnable() {

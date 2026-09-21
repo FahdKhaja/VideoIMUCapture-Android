@@ -2,9 +2,14 @@ package se.lth.math.videoimucapture;
 
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 
+import androidx.preference.PreferenceManager;
+
 import java.io.File;
+import java.io.IOException;
+import java.util.Locale;
 
 /**
  * One button, three behaviours. The operating principle is the operator's: almost dumb.
@@ -41,36 +46,6 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
 
     public enum Mode {WALK, OBJECT, PANO}
 
-    /**
-     * What is actually running, for the UI.
-     *
-     * One boolean used to carry all of this, and it could not, because the two start controls
-     * are independent: during a video-only recording something IS running, but a stills run is
-     * NOT, and those two facts drive different parts of the screen. Collapsing them put the
-     * capture button into its stop state during a plain video clip -- where pressing it does
-     * not stop anything, it starts a stills run.
-     */
-    public static final class RunState {
-        /** A stills run is live. This is what the capture button is a stop button FOR. */
-        public final boolean stillsRunning;
-        /** A video recording is live, whether or not it owns the session. */
-        public final boolean videoActive;
-        /** An OBJECT composite is part-way through its sequence. */
-        public final boolean compositeRunning;
-        /** Anything at all is going on: what the idle timer and the mode strip care about. */
-        public final boolean anyActive;
-        public final String summary;
-
-        RunState(boolean stillsRunning, boolean videoActive, boolean compositeRunning,
-                 String summary) {
-            this.stillsRunning = stillsRunning;
-            this.videoActive = videoActive;
-            this.compositeRunning = compositeRunning;
-            this.anyActive = stillsRunning || videoActive || compositeRunning;
-            this.summary = summary;
-        }
-    }
-
     /** Fired on the main thread when a run starts or stops, for UI state. */
     public interface StateListener {
         void onRunStateChanged(RunState state);
@@ -103,17 +78,13 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
     // the other's, so "the session is over" is not a fact either path holds alone.
     private SessionManifest mManifest;
     private boolean mVideoActive = false;
-    // An OBJECT composite is a 15-second SEQUENCE of posted stages, not an instant, and the
-    // button that fires it had no guard. Two presses started two composites: two directories,
-    // two writers racing for the same file, two sets of stage handlers reconfiguring focus and
-    // exposure under each other, and a lockAutoAlgorithms(false) from the first landing in the
-    // middle of the second. The button gives no hint that it is busy, so this was one
-    // impatient tap away at all times.
-    private boolean mCompositeActive = false;
+    /** OBJECT mode's one press, which runs its own session start to finish. */
+    private final ObjectComposite mComposite;
 
     public CaptureModeManager(CameraCaptureActivity activity) {
         mActivity = activity;
         mTrigger = new StillnessTrigger(this);
+        mComposite = new ObjectComposite(activity, mMain, this::notifyState);
     }
 
     public void setStateListener(StateListener l) {
@@ -125,7 +96,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // is the discipline the clip is being shot under and it names the directory, so
         // changing it mid-clip makes the name a lie about what the frames were. The strip is
         // dimmed for all three; this refuses the change if anything gets past that.
-        if (mRunning || mVideoActive || mCompositeActive) {
+        if (mRunning || mVideoActive || mComposite.isActive()) {
             Log.w(TAG, "mode change ignored while a capture is active");
             return;
         }
@@ -191,7 +162,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // A test-matrix clip names its own cell. Without this the cell lives only in whatever the
         // operator remembers, and a matrix whose cells cannot be told apart afterwards is not a
         // matrix.
-        String prefix = mMode.name().toLowerCase(java.util.Locale.US) + "_vid";
+        String prefix = mMode.name().toLowerCase(Locale.US) + "_vid";
         if (mTestTag != null) {
             prefix = "test" + mTestTag + "_" + prefix;
         }
@@ -206,15 +177,13 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // count of whatever stills run came before it and its receipt claims stills it never
         // took -- a manifest is only worth having if nothing in it is left over.
         mShots = 0;
-        mManifest = new SessionManifest(mActivity, dir, mMode.name(), mTestTag);
-        mManifest.noteFreeAtStart(StorageGuard.freeBytes(new File(mActivity.getResultRoot())));
-        mManifest.noteBatteryAtStart(BatteryGuard.percent(mActivity));
+        mManifest = SessionReceipts.open(mActivity, dir, mMode.name(), mTestTag);
         mManifest.noteVideoRequested();
         // A verdict left over from the previous clip would be reported against this one, and
         // "the last recording was fine" is not a statement about this recording.
         TextureMovieEncoder.clearLastFileVerdict();
         Camera2Proxy proxy = mActivity.getmCamera2Proxy();
-        mVideoLockedRadiometry = androidx.preference.PreferenceManager
+        mVideoLockedRadiometry = PreferenceManager
                 .getDefaultSharedPreferences(mActivity).getBoolean("lock_radiometry", true);
         if (proxy != null && mVideoLockedRadiometry) {
             proxy.lockAutoAlgorithms(true);
@@ -295,28 +264,6 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         }
     }
 
-    /**
-     * Record which lenses the session was built with.
-     *
-     * Not which it used: a session built with four physical streams that produced two files
-     * looks, in a receipt that only counts files, exactly like a normal metric-pair run.
-     */
-    private void noteLensSet(SessionManifest manifest) {
-        Camera2Proxy proxy = mActivity.getmCamera2Proxy();
-        int configured = LensRoles.activeLensIds().size();
-        // How many lenses this session's stereo was ASKED to deliver, which is not always how
-        // many were configured: the periodic path targets the metric pair by design whatever
-        // the session was built with (its request also drives the video), so a periodic
-        // session on the all-lens set delivering two lenses is the intended outcome. W1/W2
-        // on 2026-09-20 read "4 lenses configured, 2 delivered" and disagreed with two
-        // perfectly good clips.
-        boolean periodic = proxy != null && proxy.periodicStereoPairs() > 0
-                && proxy.oneShotStereoBursts() == 0;
-        int expected = periodic ? Math.min(2, configured) : configured;
-        manifest.noteLensSet(LensRoles.allLensShot() ? "all" : "pair", configured,
-                expected);
-    }
-
     private void sealSession() {
         final SessionManifest manifest = mManifest;
         if (manifest == null) {
@@ -331,18 +278,13 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             manifest.noteStereoMetaRows(proxy.stereoMetaRows());
         }
         manifest.noteStillsFired(mShots);
-        noteLensSet(manifest);
+        SessionReceipts.noteLensSet(manifest, proxy);
         final RecordingWriter writer = mActivity.getsRecordingWriter();
         // The same delay that lets the mp4 finalise is what makes the encoder's verdict
         // available: the trailer is written during release(), on the encoder thread, after the
         // record button comes up. Reading it before then would report a file that is still
         // being closed.
-        if (mActivity.getmThermalLogger() != null) {
-            manifest.noteWorstThermalStatus(mActivity.getmThermalLogger().worstStatus());
-        }
-        if (mActivity.getBatteryGuard() != null) {
-            manifest.noteBatteryAtEnd(mActivity.getBatteryGuard().percentNow());
-        }
+        SessionReceipts.noteCost(manifest, mActivity);
         mMain.postDelayed(() -> {
             manifest.noteVideoFileComplete(TextureMovieEncoder.lastFileComplete());
             manifest.write(writer == null ? null : writer.accounting());
@@ -357,7 +299,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
     /** The camera button. Exactly one entry point, whatever the mode. */
     public void onCaptureButton() {
         if (mMode == Mode.OBJECT) {
-            fireObjectComposite();
+            mComposite.fire(mMode.name(), mTestTag);
             return;
         }
         if (mRunning) {
@@ -384,15 +326,13 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             // sessions -- the header above this class has claimed otherwise since v0.13.
             Log.i(TAG, "stills joining the active video session in " + mRunDir);
         } else {
-            mRunDir = mActivity.newCaptureDir(mMode.name().toLowerCase(java.util.Locale.US));
+            mRunDir = mActivity.newCaptureDir(mMode.name().toLowerCase(Locale.US));
             if (mRunDir == null) {
                 return;
             }
         }
         if (mManifest == null) {
-            mManifest = new SessionManifest(mActivity, mRunDir, mMode.name(), mTestTag);
-            mManifest.noteFreeAtStart(StorageGuard.freeBytes(new File(mActivity.getResultRoot())));
-        mManifest.noteBatteryAtStart(BatteryGuard.percent(mActivity));
+            mManifest = SessionReceipts.open(mActivity, mRunDir, mMode.name(), mTestTag);
         }
         mManifest.noteStillsRequested();
         mWriter = mActivity.getsRecordingWriter();
@@ -401,21 +341,19 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             try {
                 mWriter.startRecording(new File(mRunDir, "video_meta.pb3").getAbsolutePath());
                 mOwnsWriter = true;
-            } catch (java.io.IOException e) {
+            } catch (IOException e) {
                 Log.e(TAG, "could not open metadata file: " + e);
                 return;
             }
         }
         // The IMU stream must be recorded alongside: it is what lets the blur PREDICTED
         // at trigger time be graded against the blur actually achieved at each shutter.
-        mActivity.getmImuManager().startRecording(mWriter);
-        mActivity.getmGnssLogger().startRecording(mWriter);
         // Thermal too. Only the video path started this, so every stills run this fork has
         // recorded has an empty thermal column -- including the 20 s WALK run on 2026-09-03,
         // graded ABSENT. A stills WALK is hundreds of full-resolution shots and RAW writes,
         // which is the hottest thing this app does; if throttling is going to change what the
         // sensor delivers, this is the run where it happens.
-        mActivity.getmThermalLogger().startRecording(mWriter);
+        mActivity.startSensorStreams(mWriter);
 
         // Lock the auto algorithms for the whole run so every frame shares one
         // radiometry; a drifting AE would make the splat explain brightness as content.
@@ -437,7 +375,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         mRunning = true;
         mEndRawPending = false;
         mActivity.getmImuManager().setStillnessTrigger(mTrigger);
-        mTrigger.start(android.os.SystemClock.elapsedRealtimeNanos());
+        mTrigger.start(SystemClock.elapsedRealtimeNanos());
 
         // A RAW at the start, one at the end: the JPEGs between them are 8-bit with a
         // tone curve, and these two give the run a linear reference to check against.
@@ -481,7 +419,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         }
         // This run's bursts count from zero; the receipt expects exactly what this run fired.
         scm.stereo().resetOneShotBursts();
-        int intervalS = androidx.preference.PreferenceManager
+        int intervalS = PreferenceManager
                 .getDefaultSharedPreferences(mActivity).getInt("stereo_interval_s", 0);
         StillCaptureManager.CaptureMode cm = mMode == Mode.PANO
                 ? StillCaptureManager.CaptureMode.PANO
@@ -550,9 +488,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
                 Log.i(TAG, "stills stopped; video still recording, streams left open");
                 return;
             }
-            mActivity.getmImuManager().stopRecording();
-            mActivity.getmGnssLogger().stopRecording();
-            mActivity.getmThermalLogger().stopRecording();
+            mActivity.stopSensorStreams();
             if (owns && writer != null) {
                 writer.stopRecording();
             }
@@ -610,141 +546,6 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         proxy.captureStills(burstMode, shots, 2.0f, raw, mRunDir, mWriter);
     }
 
-    // ------------------------------------------------------------------- object mode
-
-    private void fireObjectComposite() {
-        if (mCompositeActive) {
-            Log.w(TAG, "composite already running; ignoring the press");
-            return;
-        }
-        Camera2Proxy proxy = mActivity.getmCamera2Proxy();
-        if (proxy == null) {
-            return;
-        }
-        File dir = mActivity.newCaptureDir("object");
-        if (dir == null) {
-            return;
-        }
-        mCompositeActive = true;
-        // OBJECT runs its own session start to finish and never joins one, so its receipt is
-        // local to the composite rather than the field the two continuous paths share.
-        final SessionManifest manifest = new SessionManifest(mActivity, dir, mMode.name(), mTestTag);
-        manifest.noteStillsRequested();
-        // The same notes sealSession() applies to the two continuous paths. OBJECT writes its
-        // own manifest and therefore never got any of them: the 2026-09-20 M5 receipt claimed
-        // zero stills fired against eleven on the card, reported thermal status -1 for a
-        // composite that runs the sensor flat out for fifteen seconds, and carried no battery
-        // reading at either end. A receipt for the heaviest capture in the app was the only
-        // one that could not say what the capture cost.
-        manifest.noteFreeAtStart(StorageGuard.freeBytes(new File(mActivity.getResultRoot())));
-        manifest.noteBatteryAtStart(BatteryGuard.percent(mActivity));
-        noteLensSet(manifest);
-        // Counted as each stage is ISSUED rather than assumed from the recipe, so a composite
-        // that is cut short reports what it actually asked for.
-        final int[] fired = {0};
-        RecordingWriter writer = mActivity.getsRecordingWriter();
-        boolean owns = false;
-        if (!writer.isRecording()) {
-            try {
-                writer.startRecording(new File(dir, "video_meta.pb3").getAbsolutePath());
-                owns = true;
-            } catch (java.io.IOException e) {
-                Log.e(TAG, "could not open metadata file: " + e);
-                return;
-            }
-        }
-        // OBJECT recorded no IMU and no GNSS at all — measured across every stack from
-        // 07-31 and 08-01: imu=0, gnss=0 in each. startRun() begins those streams for WALK
-        // and PANO and this path simply never did. A tripod composite still wants both: the
-        // stereo pair's baseline is metric but its POSITION is not, the orientation stamped
-        // on each still comes from a stream that was not being written, and a stack shot
-        // beside a walk cannot be tied to it without a shared clock carrying shared motion.
-        mActivity.getmImuManager().startRecording(writer);
-        mActivity.getmGnssLogger().startRecording(writer);
-        // ...and thermal, for the same reason and with the same history: an OBJECT composite is
-        // a focus stack plus brackets plus a stereo pair, minutes of full-resolution work.
-        mActivity.getmThermalLogger().startRecording(writer);
-        proxy.lockAutoAlgorithms(true);
-        StillCaptureManager scm = proxy.getStillCaptureManager();
-        if (scm != null) {
-            scm.setTriggerContext(StillCaptureManager.CaptureMode.OBJECT, 0f, 0f, false);
-        }
-
-        // Sequenced rather than concurrent: each stage reconfigures the request, and a
-        // burst must finish draining before the next changes focus or exposure under it.
-        //
-        // The focus stack is FIRST and gets the longest slot. It is the only stage that
-        // waits on hardware: each of its five slices parks the voice coil and waits for the
-        // lens to report it has arrived, up to 400 ms per step plus 120 ms of spacing. Five
-        // slices is therefore 2.6 s worst case against the 167 ms the burst version took —
-        // which is the whole reason that version came back with five identical pictures.
-        notifyState("OBJECT · focus stack");
-        proxy.captureFocusStack(5, false, dir, writer);
-        fired[0] += 5;
-
-        mMain.postDelayed(() -> {
-            notifyState("OBJECT · exposure bracket");
-            proxy.captureStills(StillCaptureManager.Mode.EXPOSURE_BRACKET, 5, 2.0f,
-                    false, dir, writer);
-            fired[0] += 5;
-        }, 4000L);
-
-        mMain.postDelayed(() -> {
-            notifyState("OBJECT · full-quality RAW");
-            proxy.captureStills(StillCaptureManager.Mode.SINGLE, 1, 0f, true, dir, writer);
-            fired[0] += 1;
-        }, 7000L);
-
-        // The stereo pair. Last, because it is the one stage whose value does not
-        // degrade if the operator has already drifted — both frames are simultaneous,
-        // so the 18.02 mm baseline between them holds regardless of what the hand did
-        // before it. Everything else in this composite is monocular and therefore
-        // scale-free; this is the stage that makes the capture metric.
-        final boolean ownsWriter = owns;
-        final boolean hasStereo = scm != null && scm.stereo().stereoSupported();
-        // With every lens configured the stereo stage is a sequence of six pairs at ~1.15 s
-        // each rather than one 2.2 s warm-up-and-fire, and the composite has to wait for it.
-        final boolean multiLens = hasStereo && scm.stereo().getStereoSurfaces().size() > 2;
-        if (hasStereo) {
-            mMain.postDelayed(() -> {
-                notifyState(multiLens ? "OBJECT · lens pairs (metric scale + baselines)"
-                        : "OBJECT · stereo pair (metric scale)");
-                scm.stereo().resetOneShotBursts();
-                proxy.captureStereoPair(dir, writer, StillCaptureManager.CaptureMode.OBJECT);
-            }, 10000L);
-        }
-
-        mMain.postDelayed(() -> {
-            proxy.lockAutoAlgorithms(false);
-            // Stop the streams this composite started — but only if it owns the session.
-            // If a video recording is running alongside, killing the IMU here would blind
-            // it mid-clip.
-            if (ownsWriter) {
-                mActivity.getmImuManager().stopRecording();
-                mActivity.getmGnssLogger().stopRecording();
-                mActivity.getmThermalLogger().stopRecording();
-                writer.stopRecording();
-            }
-            mCompositeActive = false;
-            notifyState(hasStereo ? "OBJECT complete + stereo" : "OBJECT complete");
-            // What the stage actually issued: one burst on the metric pair, six on the
-            // all-lens set, and fewer than that if the sequence was cut short -- which the
-            // receipt should then disagree with.
-            manifest.noteStereoPairs(hasStereo
-                    ? Math.max(1, proxy.oneShotStereoBursts()) : 0);
-            manifest.noteStereoMetaRows(proxy.stereoMetaRows());
-            manifest.noteStillsFired(fired[0]);
-            if (mActivity.getmThermalLogger() != null) {
-                manifest.noteWorstThermalStatus(mActivity.getmThermalLogger().worstStatus());
-            }
-            if (mActivity.getBatteryGuard() != null) {
-                manifest.noteBatteryAtEnd(mActivity.getBatteryGuard().percentNow());
-            }
-            mMain.postDelayed(() -> manifest.write(writer.accounting()), 1200L);
-            Log.i(TAG, "object composite complete: " + dir);
-        }, multiLens ? 18500L : hasStereo ? 15500L : 10500L);   // stereo adds its warm-up(s)
-    }
-
     /**
      * Tell the UI what is running, reading the state rather than being told it.
      *
@@ -757,7 +558,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             return;
         }
         final RunState state =
-                new RunState(mRunning, mVideoActive, mCompositeActive, summary);
+                new RunState(mRunning, mVideoActive, mComposite.isActive(), summary);
         // The storage watch follows the session, and this is the one place that knows when a
         // session begins and ends whichever control opened it. Free space is not checked while
         // the app merely sits at the preview: nothing is being written then, and a statfs every

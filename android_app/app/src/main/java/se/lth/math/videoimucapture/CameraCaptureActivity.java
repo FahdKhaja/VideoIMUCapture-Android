@@ -165,6 +165,28 @@ public class CameraCaptureActivity extends AppCompatActivity {
     public ThermalLogger getmThermalLogger() {
         return mThermalLogger;
     }
+
+    /**
+     * Everything that is recorded ALONGSIDE the pictures, onto one writer and therefore one
+     * clock: IMU, GNSS, thermal.
+     *
+     * One place, because there were four -- the record button, a stills run, the OBJECT
+     * composite and their three stops -- each a hand-copied list, and the lists had already
+     * drifted once: thermal was added to the video path in v0.14 and not to the others, so
+     * every stills run recorded an empty thermal column (the 2026-09-03 WALK run was graded
+     * ABSENT) until someone looked. A fourth stream is added here.
+     */
+    public void startSensorStreams(RecordingWriter writer) {
+        mImuManager.startRecording(writer);
+        mGnssLogger.startRecording(writer);
+        mThermalLogger.startRecording(writer);
+    }
+
+    public void stopSensorStreams() {
+        mImuManager.stopRecording();
+        mGnssLogger.stopRecording();
+        mThermalLogger.stopRecording();
+    }
     public CaptureModeManager getmCaptureModeManager() {
         return mCaptureModeManager;
     }
