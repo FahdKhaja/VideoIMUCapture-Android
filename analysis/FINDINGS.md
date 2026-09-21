@@ -256,11 +256,14 @@ And one the receipt did not catch: the 18:53 L1 said `agrees: true` while logcat
   ReconStab #55 (2026-09-21). Still owed there: N1/N2 scored by the matcher on a real route,
   and a per-session effective focal for every archive pair.
 - **Code structure**: the modularization pass is verified on the phone (2026-09-21 §1) and
-  sits on branch `modularize`, unmerged. Not done, on purpose: `stereo/` and `session/`
-  packages. Those classes call back into the capture core, so the move means widening a few
-  dozen members to public across a circular boundary.
-- **A pair sequence under a joining video** (2026-09-21 §3): unguarded, costs frame rows at
-  every swap, and may put wide-lens frames in the clip. Needs a decision -- hold the video's
-  start until the sequence ends, or end the sequence when a video joins -- and a cell.
+  merged as v0.21. Not done, on purpose: `stereo/` and `session/` packages. Those classes call
+  back into the capture core, so the move means widening a few dozen members to public across
+  a circular boundary.
+- **A pair sequence under a joining video** (2026-09-21 §3): fixed in `724a55f` -- the recording
+  takes the repeating request, the sequence ends, and the receipt says `stereo_sequence_cut`.
+  108 host tests pass. **NOT yet run on the phone**: it came off adb before M3 could be
+  re-driven. M3 on the all-lens set is the cell; it should read "pair sequence ended at N of
+  6 (video joined)", agree, and lose no frame rows after the first second. The single-pair
+  path changed with it and no cell reaches it while `lens_set` is "all".
 - **Periodic pairs with the per-physical crop left unset** (2026-09-21 §5): does the row then
   say 1.4x? One W-style cell would answer it.
