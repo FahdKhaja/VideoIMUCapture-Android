@@ -50,7 +50,8 @@ Session names are directories under the data root; with no argument each script 
 |---|---|---|
 | `dump_meta.py <session>...` | What do the rows say, before any pixel is looked at? Per burst: are the halves one sensor period apart, exposure/ISO per lens, zoom, the crop the HAL reports against the active array, and whether `time_ns == logical_result_time_ns` (the pixels are the request's frame, not a warm-up frame). | pb3, census |
 | `analyze_pairs.py <session>...` | Does each stream carry its own lens's field of view? SIFT + RANSAC similarity per pair; the scale is the ratio of effective focal lengths, compared with the census prediction. Then, from the published 18.02 mm uw+main baseline, tries a metric PnP for the 3x and 5x — the unpublished baselines G1/G2 exist to measure. | jpgs, census |
-| `zoom_probe.py` | Does `CONTROL_ZOOM_RATIO` 0.6 lift the crop on the ultrawide stream? Six fits against the zoom-1.0 frames, each answering one question. | `zoom/` |
+| `frame_holes.py <session>...` | Where are the holes in the frame records? The file's `frame_accounting` says how many were lost and to which counter; the encoder's frame numbers say where, and whether a still or a pair was being shot there. | pb3 |
+| `zoom_probe.py [dir]` | Does `CONTROL_ZOOM_RATIO` 0.6 lift the crop on the ultrawide stream? Six fits against the zoom-1.0 frames, each answering one question. | `zoom/`, or the directory named |
 | `overlay.py <session>` | The all-lens shot as three pictures: every lens placed inside the ultrawide frame by its own matched features, the six pairs with inlier matches and row data, and a red/cyan anaglyph of uw+main. Written to `data/<session>_viz/`. | jpgs, pb3, census |
 | `wn_compare.py` | What did N1/N2 (HAL edge + noise reduction) and W1/W2 (distortion correction) change in the pixels? Robust noise sigma on flat regions, Laplacian detail on textured ones, JPEG size; straightness of long edges in the outer 30% of the frame. | `wn/` |
 

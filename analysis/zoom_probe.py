@@ -19,7 +19,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from analyze_pairs import census, match, similarity, DATA, UW, MAIN  # noqa: E402
 
-ZDIR = os.path.join(DATA, "zoom")
+# The probe run to read: a directory under the data root, "zoom" unless one is named.
+ZDIR = os.path.join(DATA, sys.argv[1] if len(sys.argv) > 1 else "zoom")
 
 
 def frame(case, tag):

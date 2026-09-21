@@ -5,6 +5,107 @@ already shot. Dated, newest first. One phone: Galaxy S24 Ultra, Android 16. Ever
 is reproducible from the named session with the named script; the sessions themselves are not
 in git (see [README.md](README.md)).
 
+## 2026-09-21
+
+The modularization pass (branch `modularize`) driven on the phone with `drive_cell.ps1`, phone
+still, `lens_set` = all. Sessions pulled as `L1e`, `M2e`, `M3e`, `M5e`, `zoom3`.
+
+### 1. The refactor behaves as the code it replaced
+
+On `310c1e5`: M1, M3, M4, M5, M6, L1, W1 all `agrees: true`. Every stills cell ran the six-pair
+sequence (the phone was left on the all-lens set), so the pair sequence, the single
+restore-preview path, the focus stack's restore and periodic start/stop were each exercised,
+and the log shows each restore once where it should be.
+
+Receipts can agree while rows lie, so L1 was read back too. `dump_meta.py L1e`: twelve rows,
+all `REQUEST'S FRAME`, zoom 0.60, `|dt|` 0.000 ms. `analyze_pairs.py L1e`: uw -> main 1.669
+(74/418) against census 1.636, main -> 3x 2.645 (38/268) against 2.655; effective focals 777.1
+and 3429.7 px against 792.5 and 3443.5. The same result as L1d on `09e5e47`, in daylight
+(main at ISO 297 rather than 5887), from different classes.
+
+### 2. M2 did not agree, and the refactor did not do it
+
+M2 -- video only, no interval -- ran straight after an M1 that fired six pairs and sealed with
+"6 armed, 12 rows", no stereo file on the card, `agrees: false`. The stereo counters were
+reset where pairs are STARTED, so a session that starts none reset nothing; the reset sites
+were the same three before the refactor. The same placement was wrong the other way: a stills
+run joining a video reset the row count under the video's periodic pairs, and the periodic
+count was only ever reset by the next periodic run. Fixed in `c445d7f` (reset where a session
+OPENS, never where it is joined) and confirmed: W1 12/24, then M1 6/12 (not 18), then M2 0/0,
+then M4 0/0, all agreeing.
+
+### 3. The lost frame records: which counter, and where (issue #3)
+
+`frame_holes.py`. The counter is `time_dropped_unmatched` in every case seen: an encoder frame
+whose capture result never arrived as a row.
+
+| clip | lost | where |
+|---|---|---|
+| M2e, video only | 1 | frame 0: the first row is frame 1 |
+| M3e, stills then video, six-pair sequence running | 15 | frames 0-1, then 5-7, 40-42, 72-75, 142-144 |
+| W1 08:55 | 1 | not pulled; same counter |
+| M2 08:56, M4 x2, W1 08:51 | 0 | |
+
+So the intermittent single loss IS the start edge: the clip's first encoded frame has no
+partner, some of the time. And M3 shows a second, separate cause. Its pairs were kept at
+-1.44, -0.24, +0.91, +2.05, +3.22 and +4.35 s of video time, which puts the request swaps
+(about 0.35 s after each keep) at +0.12, +1.26, +2.40, +3.57 and the final preview restore at
++4.70. The holes are at +0.07, +1.34, +2.45 and +4.79 s, each 3-4 frames across a 134-168 ms
+gap. When the repeating request is replaced under a recording, the encoder goes on producing
+frames for which no result row is written. One swap lost nothing -- main+5x to 3x+5x, at
++3.57 s -- and why that one did not is not known.
+
+That is also a hazard in its own right. `startRunStereo` declines a one-shot pair when a video
+is ALREADY recording, because the warm-up replaces the recording's request. It cannot decline
+for a video that joins two seconds later: in M3 the sequence was already running, and for about
+five seconds the clip was fed by TEMPLATE_PREVIEW warm-up requests at zoom 0.6. Whether those
+frames are wide-lens frames cannot be read from the file -- frame rows carry no zoom_ratio,
+and their focal length and crop never change -- and the mp4 was not pulled. Unverified, and
+worth a cell of its own.
+
+### 4. The probe has never written its results, until now
+
+Verifying the probe's move to `probe/` produced a 235-byte file: a device name and an
+exception. So did last night's 19:32 run, to the byte. The streaming stage ends by killing the
+camera service on purpose; the loop then asked for the next camera id's characteristics, got
+"unknown device 1", and the exception discarded every stage's output because the result
+arrays were attached after the loop. Last night's verdict survived only because the zoom
+stage's frames are JPEGs. Fixed in `eee76bc`; the file is now 14-17 kB.
+
+Running it twice in a row is not clean: the second run, three minutes after the first had
+killed the service, lost `z0.6_uw` to CAMERA_ERROR 3 and six streaming cases to "could not
+open device". A third run on a settled service was complete.
+
+### 5. With no crop requested, the HAL admits the ultrawide crop
+
+`zoom_probe.py zoom3`, "what the HAL claims", readable for the first time:
+
+| case | zoom reported | ultrawide per-physical crop | main per-physical crop |
+|---|---|---|---|
+| z1.0 both | 1.0 | **576,432 - 3424,2569** | 0,0 - 4080,3060 |
+| z0.6 both | 0.6 | 0,0 - 4000,3000 | 0,0 - 4080,3060 |
+| z0.6 uw alone | 0.6 | 0,0 - 4000,3000 | |
+| z1.0 uw alone | 1.0 | 576,432 - 3424,2569 | |
+
+4000 / 2848 = **1.404** -- the factor the pixels gave for this same probe session last night
+(z0.6 uw against z1.0 uw: 1.404, 871/1017). So the statement in 2026-09-20 §1 needs its
+condition attached: the rows report the full array when the app has ASKED for the full array
+per physical camera (`applyPhysicalFullArrays`), which the HAL echoes and does not honour.
+Asked nothing, it reports what it did. That suggests a cheap experiment for the periodic path,
+whose ultrawide half is still cropped: leave the per-physical crop unset and see whether the
+row then carries the real window -- if it does, the effective focal is in the file and needs
+no per-session measurement. Not run. And not yet a license to trust it: in the app's own
+sessions the pixels said 1.62x, and what the HAL would have claimed there is unknown.
+
+This morning's pixel fits are weaker than last night's (z0.6 uw -> main 1.510 on 56/501; the
+two ultrawide-alone fits found nothing): the phone was 0.24 m from its subject, where an
+18 mm baseline is a large parallax and a similarity is a poor model. They do not contradict
+last night's; they do not add to it either.
+
+Streaming stage, complete in a file for the first time: every pair streams from a session
+bound with all four lenses, 2+5+6 streams, and 2+5+6+7 targeted at once is DEVICE DIED
+(error 4). As observed on 2026-09-20, now recorded.
+
 ## 2026-09-20
 
 Sessions: `L1` 19:02 and `M5` 19:05 (before any fix), zoom probe 19:31, `L1c` 19:53 on
@@ -148,21 +249,18 @@ And one the receipt did not catch: the 18:53 L1 said `agrees: true` while logcat
 - **G1/G2** (target + tape, 1 m then 2 m): first baseline numbers for the 3x and 5x, and the
   5x's FOV. **H1/H2, I1/I2, O1/O2** need a walk. None is drivable from a still phone.
 - **Periodic pairs** still carry the zoom-1.0 crop with nothing in the row to say so.
-- **"1 frame records lost"** appeared on W2 and N1 but not W1 or N2 — one intermittent loss
-  per clip; on the full count, four clips of six. Smells like a start-edge race in
-  `RecordingWriter`. Which counter it is has not been read yet. Issue #3.
+- **Lost frame records** (issue #3): the counter and the positions are known (2026-09-21 §3).
+  Not fixed: the start-edge loss of frame 0, and the rows lost at each request swap.
 - **W on the ultrawide** needs a proper scene (above).
 - **Downstream**: the crop finding is written up on ReconStab #6 and the N1/N2 numbers on
   ReconStab #55 (2026-09-21). Still owed there: N1/N2 scored by the matcher on a real route,
   and a per-session effective focal for every archive pair.
-- **Code structure**: the modularization pass asked for on 2026-09-20 was done on 2026-09-21
-  (branch `modularize`) and **has not been run on the phone**. 106 host tests pass and the
-  APK assembles, but the host suite cannot see a camera. Before it is merged, from a still
-  phone with `tools/drive_cell.ps1`: M1-M6 (the two buttons, both orderings, the composite),
-  L1 on the all-lens set (the pair sequence and the one restore-preview path), one W or N
-  cell (periodic pairs inside a video), and the stereo probe once (it moved package).
-  Receipts should agree and rows should read as they did on `7e316fd`; log tags changed
-  (`StereoCapture`, `StereoRequests`, `LensRoles`, `FocusStack`), messages did not.
-  Deliberately NOT done: `stereo/` and `session/` packages. Those classes call back into
-  the capture core, so moving them means widening a few dozen members to public across a
-  circular boundary -- worth doing, but not stacked on a refactor nobody has yet watched run.
+- **Code structure**: the modularization pass is verified on the phone (2026-09-21 §1) and
+  sits on branch `modularize`, unmerged. Not done, on purpose: `stereo/` and `session/`
+  packages. Those classes call back into the capture core, so the move means widening a few
+  dozen members to public across a circular boundary.
+- **A pair sequence under a joining video** (2026-09-21 §3): unguarded, costs frame rows at
+  every swap, and may put wide-lens frames in the clip. Needs a decision -- hold the video's
+  start until the sequence ends, or end the sequence when a video joins -- and a cell.
+- **Periodic pairs with the per-physical crop left unset** (2026-09-21 §5): does the row then
+  say 1.4x? One W-style cell would answer it.
