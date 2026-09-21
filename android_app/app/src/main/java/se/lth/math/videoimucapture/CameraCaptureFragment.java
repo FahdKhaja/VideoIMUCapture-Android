@@ -55,6 +55,7 @@ public class CameraCaptureFragment extends Fragment
     private AspectFrameLayout mAspectFrameLayout;
 
     private boolean mRecordingEnabled;      // controls button state
+    private int mRecordStartPress = 0;      // which press a held first frame belongs to
 
     /** Whether the video recorder is running, for anything outside that needs to stop it. */
     public boolean isRecording() {
@@ -548,12 +549,36 @@ public class CameraCaptureFragment extends Fragment
         if (writerWasIdle) {
             ((CameraCaptureActivity) getActivity()).startSensorStreams(recordingWriter);
         }
-
-        if (camera2Proxy != null) {
-            camera2Proxy.startRecordingCaptureResult(recordingWriter);
-        } else {
+        if (camera2Proxy == null) {
             throw new RuntimeException("mCamera2Proxy should not be null upon toggling record button");
         }
+
+        // The pictures and their rows start together, and normally at once. When this press had
+        // to end a pair warm-up they start a moment later, once the restored preview is what the
+        // sensor is actually delivering -- otherwise the clip opens on warm-up frames and the
+        // swap lands inside it (M3f, 2026-09-21: four such frames, then a three-row hole). The
+        // rows wait with the pictures: a result row written during the hold has no frame to
+        // join, and would only move the loss from one counter to the other.
+        final long holdMs = modes.videoStartHoldMs();
+        if (holdMs <= 0) {
+            startFrames(camera2Proxy, modes, dir, recordingWriter);
+        } else {
+            Log.i(TAG, "holding the first frame " + holdMs + " ms for the restored preview");
+            final int press = ++mRecordStartPress;
+            mGLView.postDelayed(() -> {
+                // Stopped again inside the hold, or stopped and restarted: not this press's
+                // frames to start.
+                if (mRecordingEnabled && press == mRecordStartPress) {
+                    startFrames(camera2Proxy, modes, dir, recordingWriter);
+                }
+            }, holdMs);
+        }
+    }
+
+    /** The second half of startRecording: frame rows, periodic pairs, blur budget, encoder. */
+    private void startFrames(Camera2Proxy camera2Proxy, CaptureModeManager modes, File dir,
+                             RecordingWriter recordingWriter) {
+        camera2Proxy.startRecordingCaptureResult(recordingWriter);
         // Codec and bitrate are read here, on the UI thread, and handed to the renderer before
         // the state change is queued, so the GL thread sees them when it builds the encoder.
         SharedPreferences prefs =

@@ -152,6 +152,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // StereoRequests.cancelPairs for what M3 looked like when nothing did this.
         Camera2Proxy early = mActivity.getmCamera2Proxy();
         final int[] cut = early == null ? null : early.cancelStereoPairs("video starting");
+        mVideoStartHoldMs = cut != null ? PAIR_CANCEL_SETTLE_MS : 0L;
         if (mRunning && mRunDir != null) {
             // A stills run is already up: join it rather than opening a second writer over
             // the top of the first. One session, one clock, one directory.
@@ -213,6 +214,27 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
                 : mMode + " · video");
         Log.i(TAG, "video session started in " + dir + " (mode " + mMode + ")");
         return dir;
+    }
+
+    /**
+     * How long the restore takes to reach the pixels. Measured on M3f, 2026-09-21: with the
+     * warm-up cancelled and the recording started in the same instant, the clip's first four
+     * frames were still warm-up frames and the swap landed as a three-row hole at +0.10 s,
+     * over by +0.24 s. The pipeline is a few frames deep and a request swap stalls it for
+     * four or five more.
+     */
+    private static final long PAIR_CANCEL_SETTLE_MS = 400L;
+
+    private long mVideoStartHoldMs = 0L;
+
+    /**
+     * How long the recording's FIRST FRAME should wait after {@link #beginVideoSession}: zero,
+     * unless that call had to end a pair warm-up, in which case the preview it restored needs
+     * this long to actually be what the sensor is delivering. The session, its writer and its
+     * sensor streams open at once; only the encoder and the frame rows wait.
+     */
+    public long videoStartHoldMs() {
+        return mVideoStartHoldMs;
     }
 
     /** Release whatever beginVideoSession took, and nothing that it did not. */
