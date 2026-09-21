@@ -3,6 +3,8 @@ package se.lth.math.videoimucapture;
 import android.content.Context;
 import android.graphics.ImageFormat;
 import android.graphics.Rect;
+import android.hardware.Sensor;
+import android.hardware.SensorManager;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureResult;
@@ -22,6 +24,8 @@ import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /**
  * Dumps every camera's CameraCharacteristics to a JSON file — a per-device sensor census.
@@ -57,14 +61,14 @@ public class CameraCensus {
             // framework will allow two simultaneous sessions with a fixed baseline.
             if (Build.VERSION.SDK_INT >= 30) {
                 JSONArray concurrent = new JSONArray();
-                for (java.util.Set<String> combo : manager.getConcurrentCameraIds()) {
+                for (Set<String> combo : manager.getConcurrentCameraIds()) {
                     concurrent.put(new JSONArray(new ArrayList<>(combo)));
                 }
                 root.put("concurrent_camera_id_sets", concurrent);
             }
 
             JSONObject cameras = new JSONObject();
-            java.util.LinkedHashSet<String> allIds = new java.util.LinkedHashSet<>(
+            LinkedHashSet<String> allIds = new LinkedHashSet<>(
                     Arrays.asList(manager.getCameraIdList()));
             // Physical sub-cameras of a logical camera are NOT in getCameraIdList() but can
             // still be interrogated, and on this device that is where the telephotos live.
@@ -149,12 +153,12 @@ public class CameraCensus {
     /** Every sensor the platform reports, standard and vendor, with rate and permission. */
     private static JSONArray sensorsJson(Context context) throws JSONException {
         JSONArray out = new JSONArray();
-        android.hardware.SensorManager sm =
-                (android.hardware.SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
+        SensorManager sm =
+                (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
         if (sm == null) {
             return out;
         }
-        for (android.hardware.Sensor s : sm.getSensorList(android.hardware.Sensor.TYPE_ALL)) {
+        for (Sensor s : sm.getSensorList(Sensor.TYPE_ALL)) {
             JSONObject o = new JSONObject();
             o.put("name", s.getName());
             o.put("vendor", s.getVendor());

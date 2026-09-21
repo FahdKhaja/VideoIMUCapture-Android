@@ -3,8 +3,8 @@ package se.lth.math.videoimucapture;
 import android.graphics.ImageFormat;
 import android.graphics.Rect;
 import android.hardware.camera2.CameraAccessException;
-import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraCaptureSession;
+import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CameraMetadata;
@@ -13,13 +13,17 @@ import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.DngCreator;
 import android.hardware.camera2.TotalCaptureResult;
+import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
 import android.media.ImageReader;
 import android.os.Handler;
 import android.os.SystemClock;
 import android.util.Log;
 import android.util.Range;
+import android.util.Rational;
 import android.util.Size;
+import android.util.SizeF;
+import android.view.Surface;
 
 import androidx.annotation.NonNull;
 
@@ -29,8 +33,15 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Deque;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Full-resolution still capture: single shots, exposure brackets, and focus stacks.
@@ -113,7 +124,7 @@ public class StillCaptureManager {
     }
 
     private void setupReaders() {
-        android.hardware.camera2.params.StreamConfigurationMap map =
+        StreamConfigurationMap map =
                 mCharacteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
         if (map == null) {
             return;
@@ -172,8 +183,8 @@ public class StillCaptureManager {
     }
 
     /** Surfaces that must be included when the capture session is created. */
-    public List<android.view.Surface> getSurfaces(boolean includeRaw) {
-        List<android.view.Surface> out = new ArrayList<>();
+    public List<Surface> getSurfaces(boolean includeRaw) {
+        List<Surface> out = new ArrayList<>();
         if (mJpegReader != null) {
             out.add(mJpegReader.getSurface());
         }
@@ -219,7 +230,7 @@ public class StillCaptureManager {
         try {
             // A burst in flight is tens of MB; losing it to a fast teardown would be
             // silent data loss.
-            if (!mIo.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+            if (!mIo.awaitTermination(5, TimeUnit.SECONDS)) {
                 Log.w(TAG, "still writes did not finish before release");
             }
         } catch (InterruptedException e) {
@@ -286,7 +297,7 @@ public class StillCaptureManager {
                 b.set(CaptureRequest.JPEG_QUALITY, (byte) mJpegQuality);
             }
             // No thumbnail: nothing downstream reads it, and it is encoded per frame.
-            b.set(CaptureRequest.JPEG_THUMBNAIL_SIZE, new android.util.Size(0, 0));
+            b.set(CaptureRequest.JPEG_THUMBNAIL_SIZE, new Size(0, 0));
             b.addTarget(mJpegReader.getSurface());
             if (writeRaw && mRawReader != null) {
                 b.addTarget(mRawReader.getSurface());
@@ -377,7 +388,7 @@ public class StillCaptureManager {
             Log.w(TAG, "no metered exposure available; bracketing via AE compensation");
             Range<Integer> evRange =
                     mCharacteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
-            android.util.Rational step =
+            Rational step =
                     mCharacteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP);
             if (evRange != null && step != null && step.floatValue() != 0f) {
                 int units = Math.round(evOffset / step.floatValue());
@@ -467,7 +478,7 @@ public class StillCaptureManager {
             out[i] = Math.max(0f, Math.min(minDist, start + step * i));
         }
         Log.i(TAG, "focus plan around " + centre + " D, step " + step
-                + " D: " + java.util.Arrays.toString(out));
+                + " D: " + Arrays.toString(out));
         return out;
     }
 
@@ -510,7 +521,7 @@ public class StillCaptureManager {
             if (mJpegQuality > 0) {
                 b.set(CaptureRequest.JPEG_QUALITY, (byte) mJpegQuality);
             }
-            b.set(CaptureRequest.JPEG_THUMBNAIL_SIZE, new android.util.Size(0, 0));
+            b.set(CaptureRequest.JPEG_THUMBNAIL_SIZE, new Size(0, 0));
             b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF);
             b.set(CaptureRequest.LENS_FOCUS_DISTANCE, dioptres);
             b.addTarget(mJpegReader.getSurface());
@@ -526,7 +537,7 @@ public class StillCaptureManager {
                 mPendingRaw.add(new PendingShot(index, 0f));
             }
             session.capture(b.build(), mCaptureCallback, mHandler);
-            Log.i(TAG, String.format(java.util.Locale.US,
+            Log.i(TAG, String.format(Locale.US,
                     "focus shot %d at %.3f D (%s after %.0f ms)",
                     index, dioptres, settled ? "settled" : "TIMED OUT", settleNs / 1e6));
         } catch (CameraAccessException | IllegalStateException e) {
@@ -540,7 +551,7 @@ public class StillCaptureManager {
                 mCharacteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES);
         float[] focals =
                 mCharacteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
-        android.util.SizeF physical =
+        SizeF physical =
                 mCharacteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
         Rect active = mCharacteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
         if (apertures == null || apertures.length == 0 || focals == null || focals.length == 0
@@ -553,12 +564,12 @@ public class StillCaptureManager {
         return 2f * n * c / (f * f) * 1000f;                   // per metre = dioptres
     }
 
-    private final java.util.HashMap<Integer, Float> mRequestedFocus = new java.util.HashMap<>();
+    private final HashMap<Integer, Float> mRequestedFocus = new HashMap<>();
     // How long the lens took to reach each step, and whether it got there at all. Recorded
     // per shot so a bracket that silently collapses shows up in the metadata rather than
     // only under a sharpness measure after the fact.
-    private final java.util.HashMap<Integer, Long> mFocusSettleNs = new java.util.HashMap<>();
-    private final java.util.HashMap<Integer, Boolean> mFocusSettled = new java.util.HashMap<>();
+    private final HashMap<Integer, Long> mFocusSettleNs = new HashMap<>();
+    private final HashMap<Integer, Boolean> mFocusSettled = new HashMap<>();
 
     private final CameraCaptureSession.CaptureCallback mCaptureCallback =
             new CameraCaptureSession.CaptureCallback() {
@@ -593,7 +604,7 @@ public class StillCaptureManager {
             return;
         }
         int index = mShotCounter++;
-        String stem = String.format(java.util.Locale.US, "still_%d_%02d", mBurstId, index);
+        String stem = String.format(Locale.US, "still_%d_%02d", mBurstId, index);
 
         RecordingProtos.StillMetaData.Builder b = RecordingProtos.StillMetaData.newBuilder()
                 .setBurstId(mBurstId)
@@ -644,7 +655,7 @@ public class StillCaptureManager {
         // what the frame was actually lit by, which is the thing downstream needs.
         Integer flash = result.get(TotalCaptureResult.FLASH_MODE);
         b.setTorchOn(flash != null
-                && flash == android.hardware.camera2.CameraMetadata.FLASH_MODE_TORCH);
+                && flash == CameraMetadata.FLASH_MODE_TORCH);
         // torch_strength stays 0: CaptureResult.FLASH_STRENGTH_LEVEL is API 35 and this
         // builds against 34. The proto field is reserved for when compileSdk moves.
         // Indexed, not peeked off the pending queue: the JPEG writer drains that queue on
@@ -692,7 +703,7 @@ public class StillCaptureManager {
             return;
         }
         final File out = new File(mOutputDir,
-                String.format(java.util.Locale.US, "still_%d_%02d.jpg", mBurstId, index));
+                String.format(Locale.US, "still_%d_%02d.jpg", mBurstId, index));
         mIo.execute(() -> {
             try (FileOutputStream s = new FileOutputStream(out)) {
                 s.write(bytes);
@@ -743,7 +754,7 @@ public class StillCaptureManager {
             }
             int index = mRawWritten++;
             File out = new File(mOutputDir,
-                    String.format(java.util.Locale.US, "still_%d_%02d.dng", mBurstId, index));
+                    String.format(Locale.US, "still_%d_%02d.dng", mBurstId, index));
             try (DngCreator dng = new DngCreator(mCharacteristics, result);
                  FileOutputStream s = new FileOutputStream(out)) {
                 dng.writeImage(s, image);
@@ -757,13 +768,13 @@ public class StillCaptureManager {
     }
 
     /** Single thread, so writes stay ordered and never contend with each other. */
-    private final java.util.concurrent.ExecutorService mIo =
-            java.util.concurrent.Executors.newSingleThreadExecutor(
+    private final ExecutorService mIo =
+            Executors.newSingleThreadExecutor(
                     r -> new Thread(r, "StillWriter"));
 
     private final Object mRawLock = new Object();
-    private final java.util.LinkedHashMap<Long, Image> mRawImages = new java.util.LinkedHashMap<>();
-    private final java.util.LinkedHashMap<Long, TotalCaptureResult> mRawResults =
-            new java.util.LinkedHashMap<>();
+    private final LinkedHashMap<Long, Image> mRawImages = new LinkedHashMap<>();
+    private final LinkedHashMap<Long, TotalCaptureResult> mRawResults =
+            new LinkedHashMap<>();
     private int mRawWritten;
 }

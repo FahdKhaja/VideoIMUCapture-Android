@@ -11,6 +11,8 @@ import android.os.PowerManager;
 import android.os.SystemClock;
 import android.util.Log;
 
+import java.util.Locale;
+
 /**
  * Heat, written next to pressure.
  *
@@ -195,14 +197,14 @@ public class ThermalLogger {
     public String summary() {
         StringBuilder s = new StringBuilder();
         if (!Float.isNaN(mLastBatteryC)) {
-            s.append(String.format(java.util.Locale.US, "%.1f C", mLastBatteryC));
+            s.append(String.format(Locale.US, "%.1f C", mLastBatteryC));
         }
         if (mLastStatus >= 0) {
             s.append(s.length() > 0 ? "  " : "").append("thermal ").append(mLastStatus);
         }
         if (!Float.isNaN(mLastHeadroom)) {
             s.append(s.length() > 0 ? "  " : "")
-                    .append(String.format(java.util.Locale.US, "headroom %.2f", mLastHeadroom));
+                    .append(String.format(Locale.US, "headroom %.2f", mLastHeadroom));
         }
         return s.toString();
     }

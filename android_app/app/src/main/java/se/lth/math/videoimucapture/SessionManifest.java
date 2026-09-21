@@ -1,5 +1,6 @@
 package se.lth.math.videoimucapture;
 
+import android.content.Context;
 import android.util.Log;
 
 import org.json.JSONException;
@@ -10,8 +11,10 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * What the session actually contains, written into the session at stop.
@@ -69,7 +72,7 @@ public final class SessionManifest {
     private long mCameraErrorAtMs = -1;
     private int mStereoMetaRows = -1;
 
-    public SessionManifest(android.content.Context context, File dir, String mode,
+    public SessionManifest(Context context, File dir, String mode,
                            String testTag) {
         mDir = dir;
         mMode = mode;
@@ -87,7 +90,7 @@ public final class SessionManifest {
      * is not good enough: a pair is a comparison only if both halves came from one binary, and
      * this is the field that proves it.
      */
-    private static String gitSha(android.content.Context context) {
+    private static String gitSha(Context context) {
         try {
             return context.getString(R.string.git_sha);
         } catch (Exception e) {
@@ -100,7 +103,7 @@ public final class SessionManifest {
      * generated for this module, and a receipt that cannot name its build is no use for
      * telling two clips apart afterwards.
      */
-    private static String appVersion(android.content.Context context) {
+    private static String appVersion(Context context) {
         try {
             return context.getPackageManager()
                     .getPackageInfo(context.getPackageName(), 0).versionName;
@@ -371,12 +374,12 @@ public final class SessionManifest {
         int singleJpg = 0;
         int singleDng = 0;
         int stereoHalves = 0;
-        Map<String, java.util.Set<String>> tagsPerBurst = new HashMap<>();
+        Map<String, Set<String>> tagsPerBurst = new HashMap<>();
         // Every distinct lens that delivered ANYWHERE in the session. On this phone a
         // simultaneous capture is a pair -- the HAL will not run more than two sensors on
         // one request -- so an all-lens session is a SEQUENCE of pairs, and the question
         // "did every lens deliver" is answered across bursts, not within one.
-        java.util.Set<String> lensesSeen = new java.util.LinkedHashSet<>();
+        Set<String> lensesSeen = new LinkedHashSet<>();
 
         File[] files = mDir.listFiles();
         if (files != null) {
@@ -401,9 +404,9 @@ public final class SessionManifest {
                         // capture as a pair, hiding a missing lens completely.
                         String burst = parts[1];
                         String tag = parts[2];
-                        java.util.Set<String> tags = tagsPerBurst.get(burst);
+                        Set<String> tags = tagsPerBurst.get(burst);
                         if (tags == null) {
-                            tags = new java.util.LinkedHashSet<>();
+                            tags = new LinkedHashSet<>();
                             tagsPerBurst.put(burst, tags);
                         }
                         tags.add(tag);
@@ -414,7 +417,7 @@ public final class SessionManifest {
         }
         int complete = 0;
         int widestBurst = 0;
-        for (java.util.Set<String> tags : tagsPerBurst.values()) {
+        for (Set<String> tags : tagsPerBurst.values()) {
             if (tags.size() >= 2) {
                 complete++;
             }

@@ -4,15 +4,22 @@ import android.media.MediaMetadataRetriever;
 import android.util.Log;
 
 import com.google.protobuf.CodedInputStream;
+import com.google.protobuf.ExtensionRegistryLite;
 import com.google.protobuf.WireFormat;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * What one capture directory holds, cheaply enough to list dozens and honestly enough to trust.
@@ -81,7 +88,7 @@ public final class SessionSummary {
         long bytes = 0;
         File video = null, meta = null;
         List<File> stills = new ArrayList<>();
-        java.util.Set<String> uw = new java.util.HashSet<>(), main = new java.util.HashSet<>();
+        Set<String> uw = new HashSet<>(), main = new HashSet<>();
         int dngs = 0;
         for (File f : files) {
             bytes += f.length();
@@ -101,7 +108,7 @@ public final class SessionSummary {
                 dngs++;
             }
         }
-        java.util.Collections.sort(stills);
+        Collections.sort(stills);
         int pairs = 0;
         for (String s : uw) {
             if (main.contains(s)) {
@@ -160,13 +167,13 @@ public final class SessionSummary {
                     read += n;
                 }
             }
-            org.json.JSONObject root =
-                    new org.json.JSONObject(new String(raw, java.nio.charset.StandardCharsets.UTF_8));
+            JSONObject root =
+                    new JSONObject(new String(raw, StandardCharsets.UTF_8));
             if (root.optBoolean("agrees", true)) {
                 return null;
             }
-            org.json.JSONObject expected = root.optJSONObject("expected");
-            org.json.JSONObject measured = root.optJSONObject("measured");
+            JSONObject expected = root.optJSONObject("expected");
+            JSONObject measured = root.optJSONObject("measured");
             if (expected == null || measured == null) {
                 return "the session did not get what it asked for";
             }
@@ -188,7 +195,7 @@ public final class SessionSummary {
                 return "only " + complete + " of " + armed + " stereo pairs completed";
             }
             return "the session did not get what it asked for";
-        } catch (org.json.JSONException | IOException | RuntimeException e) {
+        } catch (JSONException | IOException | RuntimeException e) {
             Log.w(TAG, "unreadable receipt in " + dir.getName() + ": " + e);
             return null;
         }
@@ -403,14 +410,14 @@ public final class SessionSummary {
                 switch (field) {
                     case 4: {   // imu
                         RecordingProtos.IMUData m = in.readMessage(RecordingProtos.IMUData.parser(),
-                                com.google.protobuf.ExtensionRegistryLite.getEmptyRegistry());
+                                ExtensionRegistryLite.getEmptyRegistry());
                         out.imu.stamp(m.getTimeNs());
                         break;
                     }
                     case 5: {   // video_meta
                         RecordingProtos.VideoFrameMetaData m = in.readMessage(
                                 RecordingProtos.VideoFrameMetaData.parser(),
-                                com.google.protobuf.ExtensionRegistryLite.getEmptyRegistry());
+                                ExtensionRegistryLite.getEmptyRegistry());
                         out.frames.stamp(m.getTimeNs());
                         if (m.getExposureTimeNs() > 0) {
                             out.exposureMinNs = Math.min(out.exposureMinNs, m.getExposureTimeNs());
@@ -425,20 +432,20 @@ public final class SessionSummary {
                     case 8: {   // orientation
                         RecordingProtos.OrientationData m = in.readMessage(
                                 RecordingProtos.OrientationData.parser(),
-                                com.google.protobuf.ExtensionRegistryLite.getEmptyRegistry());
+                                ExtensionRegistryLite.getEmptyRegistry());
                         out.orientation.stamp(m.getTimeNs());
                         break;
                     }
                     case 9: {   // gnss
                         RecordingProtos.GnssData m = in.readMessage(RecordingProtos.GnssData.parser(),
-                                com.google.protobuf.ExtensionRegistryLite.getEmptyRegistry());
+                                ExtensionRegistryLite.getEmptyRegistry());
                         out.gnss.stamp(m.getElapsedRealtimeNs());
                         break;
                     }
                     case 10: {  // stills
                         RecordingProtos.StillMetaData m = in.readMessage(
                                 RecordingProtos.StillMetaData.parser(),
-                                com.google.protobuf.ExtensionRegistryLite.getEmptyRegistry());
+                                ExtensionRegistryLite.getEmptyRegistry());
                         out.stills.stamp(m.getTimeNs());
                         if (m.getJpegFile().startsWith("stereo_")) {
                             out.stereoRows++;
@@ -448,7 +455,7 @@ public final class SessionSummary {
                     case 11: {  // thermal
                         RecordingProtos.ThermalData m = in.readMessage(
                                 RecordingProtos.ThermalData.parser(),
-                                com.google.protobuf.ExtensionRegistryLite.getEmptyRegistry());
+                                ExtensionRegistryLite.getEmptyRegistry());
                         out.thermal.stamp(m.getTimeNs());
                         if (m.getBatteryTempC() != 0f) {
                             out.lastBatteryC = m.getBatteryTempC();

@@ -1,7 +1,9 @@
 package se.lth.math.videoimucapture;
 
+import android.annotation.SuppressLint;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 
 import java.io.File;
@@ -105,7 +107,7 @@ public final class StorageGuard {
      * reading is the honest one, and being wrong in this direction only ever costs a session
      * that could have run slightly longer.
      */
-    @android.annotation.SuppressLint("UsableSpace")
+    @SuppressLint("UsableSpace")
     public static long freeBytes(File root) {
         if (root == null) {
             return 0;
@@ -155,7 +157,7 @@ public final class StorageGuard {
         mActive = true;
         mFired = false;
         mFreeAtStart = freeBytes(mRoot);
-        mStartedMs = android.os.SystemClock.elapsedRealtime();
+        mStartedMs = SystemClock.elapsedRealtime();
         mLast = new Status(mFreeAtStart, 0, -1);
         Log.i(TAG, "watching: " + describe(mFreeAtStart) + " free at start");
         mMain.postDelayed(mTick, TICK_MS);
@@ -208,7 +210,7 @@ public final class StorageGuard {
 
     private Status measure() {
         long free = freeBytes(mRoot);
-        long elapsedMs = android.os.SystemClock.elapsedRealtime() - mStartedMs;
+        long elapsedMs = SystemClock.elapsedRealtime() - mStartedMs;
         long written = mFreeAtStart - free;
         // Under ten seconds, or if something freed space underneath us, there is nothing
         // honest to project from. Say so with -1 rather than inventing a number.

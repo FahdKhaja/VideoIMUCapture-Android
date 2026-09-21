@@ -3,6 +3,8 @@ package se.lth.math.videoimucapture;
 import android.content.SharedPreferences;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -143,7 +145,7 @@ public final class TestPlan {
      * Within a sitting the pairs must stay adjacent: a pair shot an hour apart in different
      * light is two clips, not a comparison.
      */
-    private static final java.util.List<String> REQUESTED = java.util.Arrays.asList(
+    private static final List<String> REQUESTED = Arrays.asList(
             // 1 -- does what was built this week actually work?
             "M1", "M2", "M3", "M4", "M5", "M6",
             // 2 -- the all-lens shot, then the baselines it makes measurable
@@ -237,7 +239,7 @@ public final class TestPlan {
                 out.add(s);
             }
         }
-        java.util.Collections.sort(out,
+        Collections.sort(out,
                 (a, b) -> Long.compare(doneAt(sp, b.id), doneAt(sp, a.id)));
         return out;
     }

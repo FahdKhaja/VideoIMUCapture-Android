@@ -5,31 +5,32 @@ import android.os.Looper;
 import android.util.Log;
 
 import com.google.protobuf.Timestamp;
-
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.util.Queue;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-
+import se.lth.math.videoimucapture.RecordingProtos.CameraInfo;
+import se.lth.math.videoimucapture.RecordingProtos.EnvironmentData;
+import se.lth.math.videoimucapture.RecordingProtos.GnssAntennaInfoData;
+import se.lth.math.videoimucapture.RecordingProtos.GnssData;
+import se.lth.math.videoimucapture.RecordingProtos.GnssMeasurementData;
+import se.lth.math.videoimucapture.RecordingProtos.GnssNavigationMessageData;
+import se.lth.math.videoimucapture.RecordingProtos.GnssStatusData;
+import se.lth.math.videoimucapture.RecordingProtos.IMUData;
+import se.lth.math.videoimucapture.RecordingProtos.IMUInfo;
+import se.lth.math.videoimucapture.RecordingProtos.LightData;
+import se.lth.math.videoimucapture.RecordingProtos.MessageWrapper;
+import se.lth.math.videoimucapture.RecordingProtos.OrientationData;
+import se.lth.math.videoimucapture.RecordingProtos.StepData;
+import se.lth.math.videoimucapture.RecordingProtos.StillMetaData;
+import se.lth.math.videoimucapture.RecordingProtos.ThermalData;
 import se.lth.math.videoimucapture.RecordingProtos.VideoCaptureData;
 import se.lth.math.videoimucapture.RecordingProtos.VideoFrameMetaData;
 import se.lth.math.videoimucapture.RecordingProtos.VideoFrameToTimestamp;
-import se.lth.math.videoimucapture.RecordingProtos.IMUData;
-import se.lth.math.videoimucapture.RecordingProtos.IMUInfo;
-import se.lth.math.videoimucapture.RecordingProtos.CameraInfo;
-import se.lth.math.videoimucapture.RecordingProtos.EnvironmentData;
-import se.lth.math.videoimucapture.RecordingProtos.StepData;
-import se.lth.math.videoimucapture.RecordingProtos.OrientationData;
-import se.lth.math.videoimucapture.RecordingProtos.GnssData;
-import se.lth.math.videoimucapture.RecordingProtos.StillMetaData;
-import se.lth.math.videoimucapture.RecordingProtos.ThermalData;
-import se.lth.math.videoimucapture.RecordingProtos.LightData;
-import se.lth.math.videoimucapture.RecordingProtos.GnssMeasurementData;
-import se.lth.math.videoimucapture.RecordingProtos.GnssStatusData;
-import se.lth.math.videoimucapture.RecordingProtos.GnssNavigationMessageData;
-import se.lth.math.videoimucapture.RecordingProtos.GnssAntennaInfoData;
-import se.lth.math.videoimucapture.RecordingProtos.MessageWrapper;
+
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.util.Locale;
+import java.util.Queue;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 import static java.lang.Math.abs;
 
@@ -123,7 +124,7 @@ public class RecordingWriter implements Runnable{
                         .setComplete(a.isComplete()))
                 .build().writeTo(mFileStream);
         if (!a.isComplete()) {
-            Log.w(TAG, String.format(java.util.Locale.US,
+            Log.w(TAG, String.format(Locale.US,
                     "sealing with %d frame records lost (%d written): queue meta=%d time=%d, "
                             + "unmatched meta=%d time=%d. Position-based joins on this file "
                             + "will be off by that much after the first hole.",
@@ -163,7 +164,7 @@ public class RecordingWriter implements Runnable{
 
     /** Told, on the main thread, when the file could not be written. */
     public interface FailureListener {
-        void onWriteFailed(java.io.IOException cause);
+        void onWriteFailed(IOException cause);
     }
 
     private volatile FailureListener mFailureListener;
@@ -179,7 +180,7 @@ public class RecordingWriter implements Runnable{
         // behind, and in both cases the right move is to stop asking and let the file be
         // whatever was flushed.
         try {
-            if (!mQueue.offer(mPoisonPill, 2, java.util.concurrent.TimeUnit.SECONDS)) {
+            if (!mQueue.offer(mPoisonPill, 2, TimeUnit.SECONDS)) {
                 Log.e(TAG, "writer did not take the stop within 2 s; abandoning the queue");
                 mIsRecording = false;
             }

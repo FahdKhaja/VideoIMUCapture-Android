@@ -9,7 +9,6 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.widget.Toolbar;
 import androidx.preference.PreferenceFragmentCompat;
 
-
 public class CaptureSettings extends PreferenceFragmentCompat {
     public static final String TAG = "VIMUC-CaptureSettings";
 

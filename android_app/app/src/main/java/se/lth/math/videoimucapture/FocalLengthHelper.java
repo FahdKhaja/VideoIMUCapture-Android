@@ -1,8 +1,5 @@
 package se.lth.math.videoimucapture;
 
-// estimate focal length, i.e., imaging distance in pixels, using all sorts of info
-// TODO(jhuai): set default imaging distance using empirical data, see colmap
-
 import android.graphics.Rect;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.params.OisSample;
@@ -14,6 +11,12 @@ import android.util.SizeF;
 import androidx.annotation.RequiresApi;
 
 import static java.lang.Math.abs;
+
+// estimate focal length, i.e., imaging distance in pixels, using all sorts of info
+// TODO(jhuai): set default imaging distance using empirical data, see colmap
+
+
+
 
 public class FocalLengthHelper {
 

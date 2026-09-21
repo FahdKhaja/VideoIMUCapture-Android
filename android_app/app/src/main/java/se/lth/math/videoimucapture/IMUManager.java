@@ -2,6 +2,7 @@ package se.lth.math.videoimucapture;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.hardware.Sensor;
 import android.hardware.SensorAdditionalInfo;
 import android.hardware.SensorEvent;
@@ -13,10 +14,12 @@ import android.os.HandlerThread;
 import android.os.Process;
 import android.util.Log;
 
+import androidx.preference.PreferenceManager;
+
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Iterator;
-
+import java.util.Locale;
 
 public class IMUManager extends SensorEventCallback {
     private static final String TAG = "IMUManager";
@@ -179,7 +182,7 @@ public class IMUManager extends SensorEventCallback {
             return true;
         }
         return mAppContext.checkSelfPermission(android.Manifest.permission.ACTIVITY_RECOGNITION)
-                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+                == PackageManager.PERMISSION_GRANTED;
     }
 
     private void setSensorType() {
@@ -629,7 +632,7 @@ public class IMUManager extends SensorEventCallback {
      * typed into the setting.
      */
     private int batchLatencyUs() {
-        int ms = androidx.preference.PreferenceManager
+        int ms = PreferenceManager
                 .getDefaultSharedPreferences(mAppContext).getInt("imu_batch_ms", 0);
         if (ms <= 0) {
             return 0;
@@ -688,7 +691,7 @@ public class IMUManager extends SensorEventCallback {
         int batchUs = batchLatencyUs();
         mBatchLatencyUs = batchUs;
         if (batchUs > 0) {
-            Log.i(TAG, String.format(java.util.Locale.US,
+            Log.i(TAG, String.format(Locale.US,
                     "IMU batching %d ms (gyro FIFO %d events, accel FIFO %d)",
                     batchUs / 1000, fifoOf(mGyro), fifoOf(mAccel)));
         }

@@ -16,30 +16,34 @@
 
 package se.lth.math.videoimucapture;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-import androidx.fragment.app.Fragment;
-
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.SurfaceTexture;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
-import androidx.appcompat.app.AppCompatActivity;
-
 import android.util.Log;
 import android.util.Size;
+import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
+import android.widget.Toast;
+
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.fragment.app.Fragment;
 
 import com.google.android.material.appbar.MaterialToolbar;
 
 import java.io.File;
 import java.io.IOException;
 import java.lang.ref.WeakReference;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 /**
  * Shows the camera preview on screen while simultaneously recording it to a .mp4 file.
@@ -195,7 +199,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
     }
 
     /** The TESTS menu item (android:onClick in menu/camera.xml). See {@link TestPlanRunner}. */
-    public void showTestPlan(@SuppressWarnings("unused") android.view.MenuItem unused) {
+    public void showTestPlan(@SuppressWarnings("unused") MenuItem unused) {
         new TestPlanRunner(this).show();
     }
 
@@ -211,17 +215,17 @@ public class CameraCaptureActivity extends AppCompatActivity {
      * The keys keep their normal meaning when there is no camera to compensate.
      */
     @Override
-    public boolean onKeyDown(int keyCode, android.view.KeyEvent event) {
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
         int steps = 0;
-        if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
             steps = 1;
-        } else if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN) {
+        } else if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
             steps = -1;
         }
         if (steps != 0 && mCamera2Proxy != null) {
             float stops = mCamera2Proxy.nudgeExposureCompensation(steps);
             if (!Float.isNaN(stops)) {
-                Log.i(TAG, String.format(java.util.Locale.US,
+                Log.i(TAG, String.format(Locale.US,
                         "exposure compensation now %+.2f stops", stops));
                 mVolumeKeysConsumed = true;
                 return true;   // swallow it: no volume change, no system slider over the preview
@@ -232,12 +236,12 @@ public class CameraCaptureActivity extends AppCompatActivity {
     }
 
     @Override
-    public boolean onKeyUp(int keyCode, android.view.KeyEvent event) {
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
         // Swallow the matching UP too, or the system still shows its volume panel on release.
         // Only when the DOWN was actually used for exposure: on a device that declines to be
         // compensated the keys must keep changing the volume, not do nothing at all.
-        if ((keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP
-                || keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN)
+        if ((keyCode == KeyEvent.KEYCODE_VOLUME_UP
+                || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)
                 && mVolumeKeysConsumed) {
             return true;
         }
@@ -393,12 +397,12 @@ public class CameraCaptureActivity extends AppCompatActivity {
         // app ("disabled by policy"), every open for the next stage was refused, and the
         // result file said nothing about why. The capture path already holds this flag while
         // recording, for the same reason.
-        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         final Context appContext = getApplicationContext();
         new Thread(() -> {
             StereoProbe.run(appContext);
             runOnUiThread(() -> getWindow().clearFlags(
-                    android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
         }, "StereoProbe").start();
     }
 
@@ -459,11 +463,11 @@ public class CameraCaptureActivity extends AppCompatActivity {
     /** The film roll (ReconStab #15): every session on the phone, grouped by mode. */
     public void showRoll(@SuppressWarnings("unused") MenuItem unused) {
         if (mCaptureModeManager != null && mCaptureModeManager.isRunning()) {
-            android.widget.Toast.makeText(this, "stop the run first", android.widget.Toast.LENGTH_SHORT)
+            Toast.makeText(this, "stop the run first", Toast.LENGTH_SHORT)
                     .show();
             return;
         }
-        startActivity(new android.content.Intent(this, RollActivity.class));
+        startActivity(new Intent(this, RollActivity.class));
     }
 
     public void displayInfo(MenuItem unused) {
@@ -506,7 +510,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
             mCaptureModeManager.noteStoppedForBattery();
         }
         stopEverything();
-        new androidx.appcompat.app.AlertDialog.Builder(this)
+        new AlertDialog.Builder(this)
                 .setTitle("Battery low — capture stopped")
                 .setMessage(status.percent + "% left, so the session was ended while it could "
                         + "still be closed properly. Everything recorded up to that point is "
@@ -538,9 +542,9 @@ public class CameraCaptureActivity extends AppCompatActivity {
             mCaptureModeManager.noteStoppedForHeat();
         }
         stopEverything();
-        new androidx.appcompat.app.AlertDialog.Builder(this)
+        new AlertDialog.Builder(this)
                 .setTitle("Too hot — capture stopped")
-                .setMessage(String.format(java.util.Locale.US,
+                .setMessage(String.format(Locale.US,
                         "The phone reached thermal status %d at %.1f C, where the system can "
                                 + "take the camera away mid-clip. The session was ended while "
                                 + "it could still be closed properly, and everything recorded "
@@ -580,7 +584,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
             mCaptureModeManager.noteCameraError(error);
         }
         stopEverything();
-        new androidx.appcompat.app.AlertDialog.Builder(this)
+        new AlertDialog.Builder(this)
                 .setTitle("Camera failed — capture stopped")
                 .setMessage("The camera device reported error " + error
                         + " and had to be released, so the session was ended and its receipt "
@@ -603,7 +607,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
             mCaptureModeManager.noteStoppedForSpace();
         }
         stopEverything();
-        new androidx.appcompat.app.AlertDialog.Builder(this)
+        new AlertDialog.Builder(this)
                 .setTitle("Storage full — capture stopped")
                 .setMessage("Only " + StorageGuard.describe(status.freeBytes) + " left, so the "
                         + "session was ended while it could still be closed properly. What was "
@@ -640,7 +644,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
                     + "of it.\n\nCharge, or plug into a power bank; a charging phone is never "
                     + "refused.";
             Log.e(TAG, "refusing to start a session: battery " + pct + "%");
-            runOnUiThread(() -> new androidx.appcompat.app.AlertDialog.Builder(this)
+            runOnUiThread(() -> new AlertDialog.Builder(this)
                     .setTitle("Not enough charge")
                     .setMessage(msg)
                     .setPositiveButton("OK", null)
@@ -653,7 +657,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
             String msg = "Not enough room: " + StorageGuard.describe(free) + " free. "
                     + "Free some space or delete sessions from the roll.";
             Log.e(TAG, "refusing to start a session: " + msg);
-            runOnUiThread(() -> new androidx.appcompat.app.AlertDialog.Builder(this)
+            runOnUiThread(() -> new AlertDialog.Builder(this)
                     .setTitle("No room to record")
                     .setMessage(msg)
                     .setPositiveButton("Open the roll",
@@ -662,9 +666,9 @@ public class CameraCaptureActivity extends AppCompatActivity {
                     .show());
             return null;
         }
-        java.text.SimpleDateFormat fmt =
-                new java.text.SimpleDateFormat("yyyy_MM_dd_HH_mm_ss", java.util.Locale.US);
-        File dir = new File(getResultRoot(), prefix + "_" + fmt.format(new java.util.Date()));
+        SimpleDateFormat fmt =
+                new SimpleDateFormat("yyyy_MM_dd_HH_mm_ss", Locale.US);
+        File dir = new File(getResultRoot(), prefix + "_" + fmt.format(new Date()));
         if (!dir.mkdirs() && !dir.isDirectory()) {
             Log.e(TAG, "could not create " + dir);
             return null;

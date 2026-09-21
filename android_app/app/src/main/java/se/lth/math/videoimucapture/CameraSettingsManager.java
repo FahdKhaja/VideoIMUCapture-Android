@@ -13,6 +13,7 @@ import android.os.Build;
 import android.util.Log;
 import android.util.Range;
 import android.util.Size;
+import android.util.SizeF;
 
 import androidx.annotation.RequiresApi;
 import androidx.preference.CheckBoxPreference;
@@ -29,9 +30,9 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
-
 
 public class CameraSettingsManager {
     private static final String TAG = "CameraSettingsManager";
@@ -517,7 +518,7 @@ class CameraSettingFocusMode extends CameraSetting {
             // always further away than that, so it should sit comfortably inside the range --
             // but clamp rather than trust, because a request outside the range is undefined.
             mHyperfocalDiopters = Math.max(0f, Math.min(mHyperfocalDiopters, mMinFocusDistance));
-            Log.i("CameraSetting", String.format(java.util.Locale.US,
+            Log.i("CameraSetting", String.format(Locale.US,
                     "hyperfocal %.3f diopters (%.2f m); lens closest %.3f diopters",
                     mHyperfocalDiopters, 1.0 / mHyperfocalDiopters, mMinFocusDistance));
         }
@@ -571,7 +572,7 @@ class CameraSettingFocusMode extends CameraSetting {
     private static Float computeHyperfocalDiopters(CameraCharacteristics ch) {
         float[] focals = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
         float[] apertures = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES);
-        android.util.SizeF sensor = ch.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
+        SizeF sensor = ch.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
         if (focals == null || focals.length == 0 || apertures == null || apertures.length == 0
                 || sensor == null) {
             return null;

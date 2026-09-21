@@ -1,4 +1,5 @@
 package se.lth.math.videoimucapture;
+
 import android.content.Context;
 import android.content.res.TypedArray;
 import android.util.AttributeSet;
@@ -6,6 +7,7 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 
 import androidx.preference.PreferenceViewHolder;
+import androidx.preference.R;
 import androidx.preference.SeekBarPreference;
 
 import java.text.DecimalFormat;
@@ -63,12 +65,12 @@ public class FloatSeekBarPreference extends SeekBarPreference implements SeekBar
         super.onBindViewHolder(view);
 
         // Non-transitive R classes (AGP 8): these ids live in the preference library's R.
-        mSeekBar = (SeekBar) view.findViewById(androidx.preference.R.id.seekbar);
+        mSeekBar = (SeekBar) view.findViewById(R.id.seekbar);
         Float steps = (mMax - mMin)/mResolution;
         mSeekBar.setMax(steps.intValue());
         mSeekBar.setProgress(valueToProgress(getFloatValue()));
 
-        mTextView = (TextView) view.findViewById(androidx.preference.R.id.seekbar_value);
+        mTextView = (TextView) view.findViewById(R.id.seekbar_value);
         updateText(getFloatValue());
 
         mSeekBar.setOnSeekBarChangeListener(this);

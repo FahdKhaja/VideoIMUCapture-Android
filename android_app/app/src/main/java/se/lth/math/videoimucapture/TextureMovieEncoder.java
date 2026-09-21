@@ -24,13 +24,13 @@ import android.os.Looper;
 import android.os.Message;
 import android.util.Log;
 
-import java.io.IOException;
-import java.lang.ref.WeakReference;
-
 import se.lth.math.videoimucapture.gles.EglCore;
 import se.lth.math.videoimucapture.gles.FullFrameRect;
 import se.lth.math.videoimucapture.gles.Texture2dProgram;
 import se.lth.math.videoimucapture.gles.WindowSurface;
+
+import java.io.IOException;
+import java.lang.ref.WeakReference;
 
 /**
  * Encode a movie from frames rendered from an external texture image.

@@ -2,8 +2,12 @@ package se.lth.math.videoimucapture;
 
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.util.Range;
+
+import java.util.ArrayDeque;
+import java.util.Locale;
 
 /**
  * A blur budget instead of a light budget (ReconStab #38).
@@ -83,7 +87,7 @@ public class BlurBudgetController {
     // it is re-taken periodically -- a walk that starts in shade and ends in sun has more than
     // one right answer, and freezing the first is how you get a black clip at the end of it.
     private double mAeTargetLight = 0;          // ISO * ns
-    private final java.util.ArrayDeque<Double> mConverged = new java.util.ArrayDeque<>();
+    private final ArrayDeque<Double> mConverged = new ArrayDeque<>();
     // These four are set by two measurements and one report from the field, all 2026-09-03.
     //
     // From the operator, watching the first version run: "it was way too laggy, not too fast. it
@@ -141,7 +145,7 @@ public class BlurBudgetController {
         mManualEnabled = manualShutter;
         mGyroEma = mImu != null ? mImu.getLatestGyroMagnitude() : 0f;
         mRunning = true;
-        mStartedMs = android.os.SystemClock.elapsedRealtime();
+        mStartedMs = SystemClock.elapsedRealtime();
         mHandler.removeCallbacks(mTick);
         mHandler.post(mTick);
         Log.i(TAG, "blur budget on, " + mBudgetPx + " px; hold-still alarm at "
@@ -265,7 +269,7 @@ public class BlurBudgetController {
         if (!mManualEnabled) {
             return;
         }
-        long now = android.os.SystemClock.elapsedRealtime();
+        long now = SystemClock.elapsedRealtime();
         trackAeTarget(meteredNs);
 
         // Let the auto exposure meet the scene before taking the shutter off it. Three seconds of
@@ -341,7 +345,7 @@ public class BlurBudgetController {
         mProxy.setManualExposure(wantNs, iso);
         if (!held) {
             mHeldSinceMs = now;
-            Log.i(TAG, String.format(java.util.Locale.US,
+            Log.i(TAG, String.format(Locale.US,
                     "manual shutter engaged: %.2f ms at ISO %d, holding the AE's %.0f ISO*ms",
                     wantNs / 1e6, iso, mAeTargetLight / 1e6));
         }

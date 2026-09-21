@@ -20,19 +20,22 @@ import android.hardware.camera2.params.StreamConfigurationMap;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
-import androidx.annotation.NonNull;
-
-import androidx.preference.PreferenceManager;
+import android.os.Looper;
 import android.util.Log;
 import android.util.Range;
+import android.util.Rational;
 import android.util.Size;
+import android.util.SizeF;
 import android.view.Surface;
+
+import androidx.annotation.NonNull;
+import androidx.preference.PreferenceManager;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-
+import java.util.Map;
 
 public class Camera2Proxy {
 
@@ -102,7 +105,7 @@ public class Camera2Proxy {
             final DeviceErrorListener l = mDeviceErrorListener;
             if (l != null) {
                 // Background handler here; the session is driven from main.
-                new android.os.Handler(android.os.Looper.getMainLooper())
+                new Handler(Looper.getMainLooper())
                         .post(() -> l.onCameraDeviceError(error));
             }
         }
@@ -426,7 +429,7 @@ public class Camera2Proxy {
         }
         Range<Integer> range =
                 mCameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
-        android.util.Rational step =
+        Rational step =
                 mCameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP);
         if (range == null || step == null || range.getUpper() == range.getLower()) {
             return Float.NaN;
@@ -448,7 +451,7 @@ public class Camera2Proxy {
 
     /** Current exposure compensation in stops. */
     public float getExposureCompensationStops() {
-        android.util.Rational step = mCameraCharacteristics != null
+        Rational step = mCameraCharacteristics != null
                 ? mCameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
                 : null;
         return step == null ? 0f : mExposureCompensation * step.floatValue();
@@ -649,7 +652,7 @@ public class Camera2Proxy {
         if (focalPx <= 0f) {
             Rect active = mCameraCharacteristics.get(
                     CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
-            android.util.SizeF physical = mCameraCharacteristics.get(
+            SizeF physical = mCameraCharacteristics.get(
                     CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
             Float focalMm = mLastResult != null
                     ? mLastResult.get(CaptureResult.LENS_FOCAL_LENGTH) : null;
@@ -856,7 +859,7 @@ public class Camera2Proxy {
             // Stills share the preview session: the JPEG (and RAW) readers must be declared
             // as outputs at configuration time, even though they only receive frames when a
             // burst is fired.
-            LensRoles.setAllLensShot("all".equals(androidx.preference.PreferenceManager
+            LensRoles.setAllLensShot("all".equals(PreferenceManager
                     .getDefaultSharedPreferences(mActivity).getString("lens_set", "pair")));
             mStillCaptureManager =
                     new StillCaptureManager(mCameraCharacteristics, mCameraManager,
@@ -891,7 +894,7 @@ public class Camera2Proxy {
                 // Physical-camera streams for the simultaneous stereo pair. The probe
                 // confirmed preview+JPEG+RAW+2 physical configures on this device, so
                 // they can live in the main session rather than needing their own.
-                for (java.util.Map.Entry<String, Surface> e
+                for (Map.Entry<String, Surface> e
                         : mStillCaptureManager.stereo().getStereoSurfaces().entrySet()) {
                     OutputConfiguration oc = new OutputConfiguration(e.getValue());
                     oc.setPhysicalCameraId(e.getKey());

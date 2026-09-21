@@ -1,11 +1,10 @@
 package se.lth.math.videoimucapture;
 
-import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.location.GnssAntennaInfo;
 import android.location.GnssClock;
 import android.location.GnssMeasurement;
-import android.location.GnssAntennaInfo;
 import android.location.GnssMeasurementsEvent;
 import android.location.GnssNavigationMessage;
 import android.location.GnssStatus;
@@ -19,11 +18,12 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 
+import androidx.core.content.ContextCompat;
+
+import android.Manifest;
 import com.google.protobuf.ByteString;
 
 import java.util.List;
-
-import androidx.core.content.ContextCompat;
 
 /**
  * GPS track logger built on LocationManager (GPS provider directly — no Play Services,

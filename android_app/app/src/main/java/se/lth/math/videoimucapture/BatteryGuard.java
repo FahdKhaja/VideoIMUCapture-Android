@@ -6,6 +6,7 @@ import android.content.IntentFilter;
 import android.os.BatteryManager;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 
 import java.util.Locale;
@@ -156,7 +157,7 @@ public final class BatteryGuard {
         mActive = true;
         mFired = false;
         mPercentAtStart = percent(mAppContext);
-        mStartedMs = android.os.SystemClock.elapsedRealtime();
+        mStartedMs = SystemClock.elapsedRealtime();
         mLast = new Status(mPercentAtStart, isCharging(mAppContext), 0, -1);
         Log.i(TAG, "watching: battery " + mPercentAtStart + "%"
                 + (mLast.charging ? " (charging)" : ""));
@@ -208,7 +209,7 @@ public final class BatteryGuard {
     private Status measure() {
         int now = percent(mAppContext);
         boolean charging = isCharging(mAppContext);
-        long elapsedMs = android.os.SystemClock.elapsedRealtime() - mStartedMs;
+        long elapsedMs = SystemClock.elapsedRealtime() - mStartedMs;
         int dropped = mPercentAtStart - now;
         // Charging, or not enough movement to mean anything. Whole-percent readings make a
         // rate computed off one step wildly wrong -- a single point in thirty seconds reads

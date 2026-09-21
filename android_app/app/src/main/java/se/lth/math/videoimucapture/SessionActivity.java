@@ -2,7 +2,10 @@ package se.lth.math.videoimucapture;
 
 import android.app.Dialog;
 import android.graphics.Bitmap;
+import android.media.MediaPlayer;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.DisplayMetrics;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -103,7 +106,7 @@ public class SessionActivity extends AppCompatActivity {
     private Button mPlay;
     private SeekBar mSeek;
     private TextView mTime;
-    private final android.os.Handler mTick = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Handler mTick = new Handler(Looper.getMainLooper());
     private boolean mPrepared = false;
     private final Runnable mTickRun = new Runnable() {
         @Override
@@ -152,7 +155,7 @@ public class SessionActivity extends AppCompatActivity {
         // the log of the first try showed every clip prepared and started, so if the screen
         // stayed black the frame never reached the surface. This flag is the drawn half.
         mVideo.setOnInfoListener((mp, what, extra) -> {
-            if (what == android.media.MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
+            if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
                 mRendered = true;
             }
             return false;

@@ -1,11 +1,17 @@
 package se.lth.math.videoimucapture;
 
+import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
 import android.graphics.SurfaceTexture;
+import android.graphics.Typeface;
 import android.opengl.EGL14;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.util.Size;
 import android.view.Display;
@@ -22,22 +28,19 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 import androidx.fragment.app.Fragment;
+import androidx.preference.PreferenceManager;
 
-import com.google.android.material.appbar.MaterialToolbar;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
+import se.lth.math.videoimucapture.gles.FullFrameRect;
+import se.lth.math.videoimucapture.gles.Texture2dProgram;
 
 import java.io.File;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
-import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
-
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
-
-import se.lth.math.videoimucapture.gles.FullFrameRect;
-import se.lth.math.videoimucapture.gles.Texture2dProgram;
 
 import static android.content.Context.WINDOW_SERVICE;
 
@@ -72,8 +75,8 @@ public class CameraCaptureFragment extends Fragment
     // After `idle_sleep_s` seconds without a touch or a run, the repeating request is stopped:
     // the preview freezes, the sensor goes quiet, and any touch brings it back in about half a
     // second — the honest price of not cooking. Never while recording or during a stills run.
-    private final android.os.Handler mIdleHandler =
-            new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Handler mIdleHandler =
+            new Handler(Looper.getMainLooper());
     private boolean mCameraAsleep = false;
     private final Runnable mIdleSleep = this::sleepCamera;
     private long mRecordStartMs = 0;    // elapsedRealtime at record start, for the on-screen clock
@@ -211,7 +214,7 @@ public class CameraCaptureFragment extends Fragment
         if (getActivity() == null) {
             return 0;
         }
-        return androidx.preference.PreferenceManager.getDefaultSharedPreferences(getActivity())
+        return PreferenceManager.getDefaultSharedPreferences(getActivity())
                 .getInt("idle_sleep_s", 60);
     }
 
@@ -270,7 +273,7 @@ public class CameraCaptureFragment extends Fragment
             return;
         }
         mTorchButton.setBackgroundTintList(
-                android.content.res.ColorStateList.valueOf(
+                ColorStateList.valueOf(
                         getResources().getColor(
                                 on ? R.color.torchOnBkg : R.color.torchOffBkg, null)));
         // PANO records the environment's own light; a torch riding the camera records
@@ -302,8 +305,8 @@ public class CameraCaptureFragment extends Fragment
         for (int i = 0; i < mModeViews.length; i++) {
             boolean on = all[i] == mode;
             mModeViews[i].setAlpha(on ? 1.0f : 0.45f);
-            mModeViews[i].setTypeface(null, on ? android.graphics.Typeface.BOLD
-                    : android.graphics.Typeface.NORMAL);
+            mModeViews[i].setTypeface(null, on ? Typeface.BOLD
+                    : Typeface.NORMAL);
         }
     }
 
@@ -322,7 +325,7 @@ public class CameraCaptureFragment extends Fragment
             mCaptureButton.setImageResource(state.stillsRunning
                     ? R.drawable.ic_capture_stop : R.drawable.ic_capture_still);
             mCaptureButton.setBackgroundTintList(
-                    android.content.res.ColorStateList.valueOf(
+                    ColorStateList.valueOf(
                             getResources().getColor(state.stillsRunning
                                     ? R.color.captureButtonActiveBkg
                                     : R.color.captureButtonBkg, null)));
@@ -444,7 +447,7 @@ public class CameraCaptureFragment extends Fragment
         mRecordingEnabled = !mRecordingEnabled;
         if (mRecordingEnabled) {
             cancelIdleTimer();
-            mRecordStartMs = android.os.SystemClock.elapsedRealtime();
+            mRecordStartMs = SystemClock.elapsedRealtime();
             startRecording();
             updateControls();
         } else {
@@ -553,8 +556,8 @@ public class CameraCaptureFragment extends Fragment
         }
         // Codec and bitrate are read here, on the UI thread, and handed to the renderer before
         // the state change is queued, so the GL thread sees them when it builds the encoder.
-        android.content.SharedPreferences prefs =
-                androidx.preference.PreferenceManager.getDefaultSharedPreferences(getActivity());
+        SharedPreferences prefs =
+                PreferenceManager.getDefaultSharedPreferences(getActivity());
 
         // Periodic stereo pairs inside the video (ReconStab #36). Opt-in, like the blur budget:
         // it puts a second sensor into the recording's own request for the whole clip, and what
@@ -664,7 +667,7 @@ public class CameraCaptureFragment extends Fragment
         // a five-minute walk is exactly when it starts to matter.
         String clock = "";
         if (mRecordingEnabled && mRecordStartMs > 0) {
-            long s = (android.os.SystemClock.elapsedRealtime() - mRecordStartMs) / 1000;
+            long s = (SystemClock.elapsedRealtime() - mRecordStartMs) / 1000;
             clock = String.format(Locale.getDefault(), "REC %02d:%02d|", s / 60, s % 60);
         }
         String heat = "";
@@ -767,7 +770,7 @@ public class CameraCaptureFragment extends Fragment
             // free for the stillness shutter, which reads the stream live to decide when a
             // walk fires a still. A quiet moment seen 100 ms late is a still fired 14 cm
             // further down the walk, and nothing in the resulting file would look wrong.
-            boolean batching = androidx.preference.PreferenceManager
+            boolean batching = PreferenceManager
                     .getDefaultSharedPreferences(getActivity()).getInt("imu_batch_ms", 0) > 0;
             enableWarning(cameraSettingsManager.OISEnabled()
                     || cameraSettingsManager.DVSEnabled()
