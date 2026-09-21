@@ -708,6 +708,21 @@ public class StereoCapture {
         mStereoMetaRows = 0;
     }
 
+    /**
+     * A new SESSION: every count its receipt will read starts from zero, the periodic one too.
+     *
+     * Resetting where pairs are STARTED was not enough, in two directions. A session that
+     * starts none -- a video with no interval -- reset nothing and sealed with the previous
+     * session's counts. And a stills run JOINING a video reset the row count under the
+     * video's own periodic pairs. The session's opening is the one moment that is right for
+     * both, and it is the caller that knows when that is.
+     */
+    public void resetSessionCounts() {
+        resetOneShotBursts();
+        mPeriodicPairs = 0;
+        mPeriodicUnmatched = 0;
+    }
+
     // ------------------------------------------------------------ a pair from the stream
     //
     // ONE PAIR, CHOSEN FROM THE WARMED STREAM BY TIMESTAMP, its rows written from the matching

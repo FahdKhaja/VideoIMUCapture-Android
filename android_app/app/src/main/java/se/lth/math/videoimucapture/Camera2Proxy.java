@@ -259,6 +259,13 @@ public class Camera2Proxy {
         return mStillCaptureManager == null ? 0 : mStillCaptureManager.stereo().oneShotStereoBursts();
     }
 
+    /** A new session's pairs count from zero, whether or not it goes on to shoot any. */
+    public void resetStereoCounts() {
+        if (mStillCaptureManager != null) {
+            mStillCaptureManager.stereo().resetSessionCounts();
+        }
+    }
+
     public int stereoMetaRows() {
         return mStillCaptureManager == null ? 0 : mStillCaptureManager.stereo().stereoMetaRows();
     }

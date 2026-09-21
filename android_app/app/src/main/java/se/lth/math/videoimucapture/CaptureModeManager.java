@@ -183,6 +183,15 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // "the last recording was fine" is not a statement about this recording.
         TextureMovieEncoder.clearLastFileVerdict();
         Camera2Proxy proxy = mActivity.getmCamera2Proxy();
+        // ...and so would the previous session's pairs. The stereo counters were reset where
+        // pairs are STARTED -- a stills run's anchor, the composite, a periodic run -- so a
+        // video with no interval, which starts none, reset nothing and sealed with whatever
+        // the session before it had fired. M2 on 2026-09-21, straight after an M1 that shot six
+        // pairs: "6 armed, 12 rows", no stereo file on the card, agrees: false. They are reset
+        // where a session OPENS, here and in startRun, and nowhere a session is merely joined.
+        if (proxy != null) {
+            proxy.resetStereoCounts();
+        }
         mVideoLockedRadiometry = PreferenceManager
                 .getDefaultSharedPreferences(mActivity).getBoolean("lock_radiometry", true);
         if (proxy != null && mVideoLockedRadiometry) {
@@ -333,6 +342,9 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         }
         if (mManifest == null) {
             mManifest = SessionReceipts.open(mActivity, mRunDir, mMode.name(), mTestTag);
+            // This run OPENED the session, so its pairs count from zero. Not when it joins a
+            // video's: that session's periodic pairs are already being counted.
+            proxy.resetStereoCounts();
         }
         mManifest.noteStillsRequested();
         mWriter = mActivity.getsRecordingWriter();
@@ -417,8 +429,6 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             Log.i(TAG, "no stereo pair available on this device: run has no metric anchor");
             return;
         }
-        // This run's bursts count from zero; the receipt expects exactly what this run fired.
-        scm.stereo().resetOneShotBursts();
         int intervalS = PreferenceManager
                 .getDefaultSharedPreferences(mActivity).getInt("stereo_interval_s", 0);
         StillCaptureManager.CaptureMode cm = mMode == Mode.PANO
