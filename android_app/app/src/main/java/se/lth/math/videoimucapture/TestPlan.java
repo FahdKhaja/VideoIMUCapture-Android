@@ -539,9 +539,13 @@ public final class TestPlan {
                         + "over ~7 s: uw+main first, then uw+phys6, uw+phys7, main+phys6, "
                         + "main+phys7, phys6+phys7. The stillness trigger is held off while "
                         + "they run.\n\nPASS = six stereo_ bursts of two files each, "
-                        + "lenses_seen = 4 and stereo_pairs_complete = 6 in the manifest, "
-                        + "and agrees = true. Fewer lenses means one was configured and never "
-                        + "delivered; fewer bursts means the sequence was cut short. Either "
+                        + "lenses_seen = 4, stereo_pairs_complete = 6 and stereo_meta_rows = 12 "
+                        + "in the manifest, agrees = true; and in the rows, zoom_ratio 0.6 "
+                        + "and time_ns equal to logical_result_time_ns on every half (the "
+                        + "pixels are the frame the row describes, and both halves are one "
+                        + "sensor period). Confirmed 2026-09-20 20:09 on 09e5e47, with the "
+                        + "ultrawide 1.656x wider than the main camera against a census "
+                        + "1.636. Fewer lenses, fewer bursts, or a row whose stamps differ "
                         + "is the finding, and the receipt names it.",
                 20, prefs("stereo_interval_s", 0, "lock_radiometry", true,
                         "blur_budget_manual", false, "lens_set", "all"),
