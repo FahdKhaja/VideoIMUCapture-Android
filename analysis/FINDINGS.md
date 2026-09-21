@@ -250,7 +250,9 @@ And one the receipt did not catch: the 18:53 L1 said `agrees: true` while logcat
   5x's FOV. **H1/H2, I1/I2, O1/O2** need a walk. None is drivable from a still phone.
 - **Periodic pairs** still carry the zoom-1.0 crop with nothing in the row to say so.
 - **Lost frame records** (issue #3): the counter and the positions are known (2026-09-21 §3).
-  Not fixed: the start-edge loss of frame 0, and the rows lost at each request swap.
+  Not fixed: the start-edge loss of frame 0 -- one clip of four on the final builds, located
+  at frame 0 with no hole inside (`M3g1`). Rows are presumably still lost at any OTHER swap
+  of the repeating request under a recording (torch, a blur-budget exposure hold); unmeasured.
 - **W on the ultrawide** needs a proper scene (above).
 - **Downstream**: the crop finding is written up on ReconStab #6 and the N1/N2 numbers on
   ReconStab #55 (2026-09-21). Still owed there: N1/N2 scored by the matcher on a real route,
@@ -259,15 +261,14 @@ And one the receipt did not catch: the 18:53 L1 said `agrees: true` while logcat
   merged as v0.21. Not done, on purpose: `stereo/` and `session/` packages. Those classes call
   back into the capture core, so the move means widening a few dozen members to public across
   a circular boundary.
-- **A pair sequence under a joining video** (2026-09-21 §3): fixed in `724a55f` and verified on
-  the phone on v0.21 (`3dad053`, session `M3f`). The sequence ended at 2 of 6 when the video
-  joined, the receipt carries `stereo_sequence_cut` and agrees, the stillness trigger resumed
-  at once (13 stills against 7), and the frame rows lost fell from 15 to 3. The 3 that remain
-  are ONE hole, frames 4-6 at +0.10 s: the restore is issued before the recording starts but
-  takes about four frames to pass through the pipeline, so the clip's first four frames are
-  still warm-up frames and the swap lands just inside it. Closing that needs the recording's
-  first frame held ~0.3 s after the restore whenever a warm-up was cancelled. Not done. The
-  start-edge loss of frame 0 did not occur in this clip. The single-pair path changed with
-  the fix and is still unverified: no cell reaches it while `lens_set` is "all".
+- **A pair sequence under a joining video** (2026-09-21 §3): CLOSED, verified on the phone.
+  M3 on the all-lens set, three builds from one spot: 15 frame rows lost on `310c1e5`; 3 on
+  v0.21 `3dad053`, where the joining video ends the sequence (`724a55f`) -- one hole, frames
+  4-6 at +0.10 s, because the restore takes about four frames to reach the pixels; 0 on
+  `9a6e938` and again on `edfc4d5`, where the recording's first frame and its rows wait
+  400 ms after a warm-up had to be ended. The receipt reads "pair sequence ended at 2 of 6
+  (video joined)", carries `stereo_sequence_cut`, and agrees; the stillness trigger resumes at
+  once. On the metric pair (the single-pair path) M1 and M3 agree too, and a video that joins
+  in the tail of a warm-up whose pair is already kept is not reported as a cut.
 - **Periodic pairs with the per-physical crop left unset** (2026-09-21 §5): does the row then
   say 1.4x? One W-style cell would answer it.
