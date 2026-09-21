@@ -303,7 +303,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
      */
     private void noteLensSet(SessionManifest manifest) {
         Camera2Proxy proxy = mActivity.getmCamera2Proxy();
-        int configured = StillCaptureManager.activeLensIds().size();
+        int configured = LensRoles.activeLensIds().size();
         // How many lenses this session's stereo was ASKED to deliver, which is not always how
         // many were configured: the periodic path targets the metric pair by design whatever
         // the session was built with (its request also drives the video), so a periodic
@@ -313,7 +313,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         boolean periodic = proxy != null && proxy.periodicStereoPairs() > 0
                 && proxy.oneShotStereoBursts() == 0;
         int expected = periodic ? Math.min(2, configured) : configured;
-        manifest.noteLensSet(StillCaptureManager.allLensShot() ? "all" : "pair", configured,
+        manifest.noteLensSet(LensRoles.allLensShot() ? "all" : "pair", configured,
                 expected);
     }
 
@@ -475,12 +475,12 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
      */
     private void startRunStereo(Camera2Proxy proxy) {
         StillCaptureManager scm = proxy.getStillCaptureManager();
-        if (scm == null || !scm.stereoSupported()) {
+        if (scm == null || !scm.stereo().stereoSupported()) {
             Log.i(TAG, "no stereo pair available on this device: run has no metric anchor");
             return;
         }
         // This run's bursts count from zero; the receipt expects exactly what this run fired.
-        scm.resetOneShotBursts();
+        scm.stereo().resetOneShotBursts();
         int intervalS = androidx.preference.PreferenceManager
                 .getDefaultSharedPreferences(mActivity).getInt("stereo_interval_s", 0);
         StillCaptureManager.CaptureMode cm = mMode == Mode.PANO
@@ -701,15 +701,15 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // before it. Everything else in this composite is monocular and therefore
         // scale-free; this is the stage that makes the capture metric.
         final boolean ownsWriter = owns;
-        final boolean hasStereo = scm != null && scm.stereoSupported();
+        final boolean hasStereo = scm != null && scm.stereo().stereoSupported();
         // With every lens configured the stereo stage is a sequence of six pairs at ~1.15 s
         // each rather than one 2.2 s warm-up-and-fire, and the composite has to wait for it.
-        final boolean multiLens = hasStereo && scm.getStereoSurfaces().size() > 2;
+        final boolean multiLens = hasStereo && scm.stereo().getStereoSurfaces().size() > 2;
         if (hasStereo) {
             mMain.postDelayed(() -> {
                 notifyState(multiLens ? "OBJECT · lens pairs (metric scale + baselines)"
                         : "OBJECT · stereo pair (metric scale)");
-                scm.resetOneShotBursts();
+                scm.stereo().resetOneShotBursts();
                 proxy.captureStereoPair(dir, writer, StillCaptureManager.CaptureMode.OBJECT);
             }, 10000L);
         }

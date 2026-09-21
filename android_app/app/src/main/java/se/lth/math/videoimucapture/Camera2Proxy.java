@@ -310,7 +310,7 @@ public class Camera2Proxy {
      */
     public void captureStereoPair(File outputDir, RecordingWriter writer,
                                   StillCaptureManager.CaptureMode mode) {
-        if (mStillCaptureManager == null || !mStillCaptureManager.stereoSupported()
+        if (mStillCaptureManager == null || !mStillCaptureManager.stereo().stereoSupported()
                 || mCaptureSession == null || mPreviewRequestBuilder == null) {
             return;
         }
@@ -325,7 +325,7 @@ public class Camera2Proxy {
         // warm-up that targets four physical streams is what killed the device on
         // 2026-09-20 -- the HAL will run two sensors per request on this phone -- and the
         // streaming probe showed every pair streams from a session bound with all four.
-        if (mStillCaptureManager.getStereoSurfaces().size() > 2) {
+        if (mStillCaptureManager.stereo().getStereoSurfaces().size() > 2) {
             captureLensPairSequence(outputDir, writer, mode);
             return;
         }
@@ -347,9 +347,9 @@ public class Camera2Proxy {
             }
             // Widest zoom in the warm-up, for the same reason as the pair sequence: the
             // ultrawide's stream is only the ultrawide's view once the HAL is at 0.6.
-            mStillCaptureManager.applyFullFieldOfView(warm);
+            mStillCaptureManager.stereo().applyFullFieldOfView(warm);
             warm.addTarget(mPreviewSurface);
-            for (Surface s : mStillCaptureManager.getStereoSurfaces().values()) {
+            for (Surface s : mStillCaptureManager.stereo().getStereoSurfaces().values()) {
                 warm.addTarget(s);
             }
             mCaptureSession.setRepeatingRequest(
@@ -357,9 +357,9 @@ public class Camera2Proxy {
             Log.d(TAG, "stereo warm-up streaming");
 
             // Kept FROM the warm-up stream, not by a second request: see armPairFromStream.
-            mBackgroundHandler.postDelayed(() -> mStillCaptureManager.armPairFromStream(
-                    new String[]{StillCaptureManager.physUltrawide(),
-                            StillCaptureManager.physMain()},
+            mBackgroundHandler.postDelayed(() -> mStillCaptureManager.stereo().armPairFromStream(
+                    new String[]{LensRoles.physUltrawide(),
+                            LensRoles.physMain()},
                     outputDir, writer, mode), 900L);
             mBackgroundHandler.postDelayed(() -> {
                 try {
@@ -385,11 +385,11 @@ public class Camera2Proxy {
     }
 
     public int oneShotStereoBursts() {
-        return mStillCaptureManager == null ? 0 : mStillCaptureManager.oneShotStereoBursts();
+        return mStillCaptureManager == null ? 0 : mStillCaptureManager.stereo().oneShotStereoBursts();
     }
 
     public int stereoMetaRows() {
-        return mStillCaptureManager == null ? 0 : mStillCaptureManager.stereoMetaRows();
+        return mStillCaptureManager == null ? 0 : mStillCaptureManager.stereo().stereoMetaRows();
     }
 
     /** Warm-up per pair: the probe's first frame from a cold pair came at ~500 ms. */
@@ -413,7 +413,7 @@ public class Camera2Proxy {
      */
     private void captureLensPairSequence(File outputDir, RecordingWriter writer,
                                          StillCaptureManager.CaptureMode mode) {
-        final java.util.List<String[]> pairs = mStillCaptureManager.configuredLensPairs();
+        final java.util.List<String[]> pairs = mStillCaptureManager.stereo().configuredLensPairs();
         if (pairs.isEmpty()) {
             Log.w(TAG, "no lens pairs to capture");
             return;
@@ -450,10 +450,10 @@ public class Camera2Proxy {
             // Widest zoom IN THE WARM-UP, so the HAL has already switched master lens by the
             // time the pair fires. This is what makes the ultrawide half a wide-angle frame
             // rather than a crop of the main camera's view (see applyFullFieldOfView).
-            mStillCaptureManager.applyFullFieldOfView(warm);
+            mStillCaptureManager.stereo().applyFullFieldOfView(warm);
             warm.addTarget(mPreviewSurface);
             for (String pid : pair) {
-                Surface s = mStillCaptureManager.lensSurface(pid);
+                Surface s = mStillCaptureManager.stereo().lensSurface(pid);
                 if (s != null) {
                     warm.addTarget(s);
                 }
@@ -471,7 +471,7 @@ public class Camera2Proxy {
 
         // Kept FROM this warm-up stream, by timestamp, not by a second request. The stream is
         // at 0.6 and carries both lenses' outputs of every frame; the pair is one of them.
-        mBackgroundHandler.postDelayed(() -> mStillCaptureManager.armPairFromStream(
+        mBackgroundHandler.postDelayed(() -> mStillCaptureManager.stereo().armPairFromStream(
                 pair, outputDir, writer, mode), PAIR_WARM_MS);
         mBackgroundHandler.postDelayed(() -> {
             if (i + 1 < pairs.size()) {
@@ -488,7 +488,7 @@ public class Camera2Proxy {
         if (mStillCaptureManager != null) {
             // An arm that never got both frames is logged here rather than left to the next
             // arm to notice; its rows, if any, still resolve through the pending list.
-            mStillCaptureManager.finishStreamKeep();
+            mStillCaptureManager.stereo().finishStreamKeep();
         }
         if (mCaptureSession == null || mPreviewRequestBuilder == null) {
             return;
@@ -521,7 +521,7 @@ public class Camera2Proxy {
     private boolean mPeriodicStereo = false;
 
     public boolean stereoSupported() {
-        return mStillCaptureManager != null && mStillCaptureManager.stereoSupported();
+        return mStillCaptureManager != null && mStillCaptureManager.stereo().stereoSupported();
     }
 
     public boolean periodicStereoActive() {
@@ -529,7 +529,7 @@ public class Camera2Proxy {
     }
 
     public int periodicStereoPairs() {
-        return mStillCaptureManager != null ? mStillCaptureManager.periodicPairCount() : 0;
+        return mStillCaptureManager != null ? mStillCaptureManager.stereo().periodicPairCount() : 0;
     }
 
     /**
@@ -548,7 +548,7 @@ public class Camera2Proxy {
         }
         try {
             CaptureRequest.Builder b = mCameraDevice.createCaptureRequest(
-                    CameraDevice.TEMPLATE_RECORD, StillCaptureManager.stereoPhysicalIds());
+                    CameraDevice.TEMPLATE_RECORD, LensRoles.stereoPhysicalIds());
             copyAllKeys(mPreviewRequestBuilder.build(), b);
             b.addTarget(mPreviewSurface);
             // The METRIC pair, not every lens the session happens to have configured. The
@@ -556,10 +556,10 @@ public class Camera2Proxy {
             // telephoto whose offset the device will not publish would put two more streams
             // in the recording's own repeating request for the whole walk and contribute no
             // scale for the cost.
-            for (Surface s : mStillCaptureManager.getMetricPairSurfaces().values()) {
+            for (Surface s : mStillCaptureManager.stereo().getMetricPairSurfaces().values()) {
                 b.addTarget(s);
             }
-            mStillCaptureManager.applyPhysicalFullArrays(b, StillCaptureManager.stereoPhysicalIds());
+            mStillCaptureManager.stereo().applyPhysicalFullArrays(b, LensRoles.stereoPhysicalIds());
             // NO widest-zoom here, deliberately. This request also drives the VIDEO for the
             // whole clip, and at 0.6 the logical camera switches master to the ultrawide --
             // every walk would be shot on the wide lens. So periodic pairs inside a video keep
@@ -570,7 +570,7 @@ public class Camera2Proxy {
             mPreviewRequestBuilder = b;
             mCaptureSession.setRepeatingRequest(
                     mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
-            mStillCaptureManager.startPeriodicStereo(intervalMs * 1_000_000L, outputDir,
+            mStillCaptureManager.stereo().startPeriodicStereo(intervalMs * 1_000_000L, outputDir,
                     writer, mode);
             mPeriodicStereo = true;
             Log.i(TAG, "periodic stereo: physical streams added to the repeating request, "
@@ -587,7 +587,7 @@ public class Camera2Proxy {
         }
         mPeriodicStereo = false;
         if (mStillCaptureManager != null) {
-            mStillCaptureManager.stopPeriodicStereo();
+            mStillCaptureManager.stereo().stopPeriodicStereo();
         }
         if (mCaptureSession == null || mPreviewRequestBuilder == null || mCameraDevice == null) {
             return;
@@ -1093,7 +1093,7 @@ public class Camera2Proxy {
         // The session is going away with it; no request to restore, just the bookkeeping.
         mPeriodicStereo = false;
         if (mStillCaptureManager != null) {
-            mStillCaptureManager.stopPeriodicStereo();
+            mStillCaptureManager.stereo().stopPeriodicStereo();
         }
         stopRecordingCaptureResult();
         if (null != mCaptureSession) {
@@ -1143,7 +1143,7 @@ public class Camera2Proxy {
         Log.i(TAG, "rebuilding the capture session to pick up a session-level setting");
         mPeriodicStereo = false;
         if (mStillCaptureManager != null) {
-            mStillCaptureManager.stopPeriodicStereo();
+            mStillCaptureManager.stereo().stopPeriodicStereo();
         }
         if (mCaptureSession != null) {
             try {
@@ -1212,7 +1212,7 @@ public class Camera2Proxy {
             // Stills share the preview session: the JPEG (and RAW) readers must be declared
             // as outputs at configuration time, even though they only receive frames when a
             // burst is fired.
-            StillCaptureManager.setAllLensShot("all".equals(androidx.preference.PreferenceManager
+            LensRoles.setAllLensShot("all".equals(androidx.preference.PreferenceManager
                     .getDefaultSharedPreferences(mActivity).getString("lens_set", "pair")));
             mStillCaptureManager =
                     new StillCaptureManager(mCameraCharacteristics, mCameraManager,
@@ -1248,7 +1248,7 @@ public class Camera2Proxy {
                 // confirmed preview+JPEG+RAW+2 physical configures on this device, so
                 // they can live in the main session rather than needing their own.
                 for (java.util.Map.Entry<String, Surface> e
-                        : mStillCaptureManager.getStereoSurfaces().entrySet()) {
+                        : mStillCaptureManager.stereo().getStereoSurfaces().entrySet()) {
                     OutputConfiguration oc = new OutputConfiguration(e.getValue());
                     oc.setPhysicalCameraId(e.getKey());
                     outputs.add(oc);
@@ -1323,7 +1323,7 @@ public class Camera2Proxy {
                     // Periodic stereo pairs (#36) arm on this clock and match their rows
                     // from these results. A no-op when the feature is off.
                     if (mStillCaptureManager != null) {
-                        mStillCaptureManager.onRepeatingResult(result);
+                        mStillCaptureManager.stereo().onRepeatingResult(result);
                     }
 
                     // A focus stack step may be waiting on the lens to arrive. Checked

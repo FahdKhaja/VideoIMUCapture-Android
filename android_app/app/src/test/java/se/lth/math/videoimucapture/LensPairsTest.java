@@ -27,7 +27,7 @@ public class LensPairsTest {
     @Test
     public void theMetricPairLeadsAndEveryPairAppearsOnce() {
         // The census order is what getPhysicalCameraIds() happens to hand back.
-        List<String[]> pairs = StillCaptureManager.lensPairs(
+        List<String[]> pairs = LensRoles.lensPairs(
                 Arrays.asList("5", "2", "6", "7"), UW, MAIN);
         assertEquals("C(4,2)", 6, pairs.size());
         assertArrayEquals(new String[]{"2", "5"}, pairs.get(0));
@@ -42,7 +42,7 @@ public class LensPairsTest {
     public void thePairAloneIsJustThePair() {
         // The archive's configuration: the sequence machinery must reduce to the one pair
         // every clip was shot with, not add anything to it.
-        List<String[]> pairs = StillCaptureManager.lensPairs(Arrays.asList("2", "5"), UW, MAIN);
+        List<String[]> pairs = LensRoles.lensPairs(Arrays.asList("2", "5"), UW, MAIN);
         assertEquals(1, pairs.size());
         assertArrayEquals(new String[]{"2", "5"}, pairs.get(0));
     }
@@ -51,7 +51,7 @@ public class LensPairsTest {
     public void aMissingAnchorDoesNotInventAPair() {
         // A device with no ultrawide has no published baseline; the remaining pairs still
         // enumerate, in a stable order, without a null in the first slot.
-        List<String[]> pairs = StillCaptureManager.lensPairs(Arrays.asList("5", "6", "7"), UW, MAIN);
+        List<String[]> pairs = LensRoles.lensPairs(Arrays.asList("5", "6", "7"), UW, MAIN);
         assertEquals(3, pairs.size());
         assertArrayEquals(new String[]{"5", "6"}, pairs.get(0));
         assertArrayEquals(new String[]{"5", "7"}, pairs.get(1));
@@ -60,9 +60,9 @@ public class LensPairsTest {
 
     @Test
     public void fewerThanTwoLensesIsNoPairs() {
-        assertEquals(0, StillCaptureManager.lensPairs(
+        assertEquals(0, LensRoles.lensPairs(
                 Collections.singletonList("5"), UW, MAIN).size());
-        assertEquals(0, StillCaptureManager.lensPairs(
+        assertEquals(0, LensRoles.lensPairs(
                 Collections.<String>emptyList(), UW, MAIN).size());
     }
 }
