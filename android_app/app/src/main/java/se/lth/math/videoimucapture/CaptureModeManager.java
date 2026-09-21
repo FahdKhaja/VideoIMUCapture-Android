@@ -160,9 +160,12 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             mVideoActive = true;
             if (mManifest != null) {
                 mManifest.noteVideoRequested();
-                if (cut != null) {
+                if (cut != null && cut[0] < cut[1]) {
                     // The run's own anchor, cut short on purpose. Said in the receipt, so that
                     // "two pairs of six" reads as a decision and not as four lost captures.
+                    // Only when pairs were given up: a video that joins in the tail of a
+                    // warm-up whose pairs are all armed cost the run nothing, and "ended at 1
+                    // of 1" would be a note about a loss that did not happen.
                     mManifest.notePairSequenceCut(cut[0], cut[1], "video joined");
                 }
             }
