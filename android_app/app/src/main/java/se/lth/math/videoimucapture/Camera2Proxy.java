@@ -308,7 +308,8 @@ public class Camera2Proxy {
      * not left running — that is real power and heat for a capability used once per
      * composite.
      */
-    public void captureStereoPair(File outputDir, RecordingWriter writer) {
+    public void captureStereoPair(File outputDir, RecordingWriter writer,
+                                  StillCaptureManager.CaptureMode mode) {
         if (mStillCaptureManager == null || !mStillCaptureManager.stereoSupported()
                 || mCaptureSession == null || mPreviewRequestBuilder == null) {
             return;
@@ -325,7 +326,7 @@ public class Camera2Proxy {
         // 2026-09-20 -- the HAL will run two sensors per request on this phone -- and the
         // streaming probe showed every pair streams from a session bound with all four.
         if (mStillCaptureManager.getStereoSurfaces().size() > 2) {
-            captureLensPairSequence(outputDir, writer);
+            captureLensPairSequence(outputDir, writer, mode);
             return;
         }
         try {
@@ -355,9 +356,11 @@ public class Camera2Proxy {
                     warm.build(), mSessionCaptureCallback, mBackgroundHandler);
             Log.d(TAG, "stereo warm-up streaming");
 
-            mBackgroundHandler.postDelayed(() -> mStillCaptureManager.captureStereoPair(
-                    mCameraDevice, mCaptureSession, mPreviewRequestBuilder,
-                    outputDir, writer), 900L);
+            // Kept FROM the warm-up stream, not by a second request: see armPairFromStream.
+            mBackgroundHandler.postDelayed(() -> mStillCaptureManager.armPairFromStream(
+                    new String[]{StillCaptureManager.physUltrawide(),
+                            StillCaptureManager.physMain()},
+                    outputDir, writer, mode), 900L);
             mBackgroundHandler.postDelayed(() -> {
                 try {
                     mCaptureSession.setRepeatingRequest(mPreviewRequestBuilder.build(),
@@ -408,7 +411,8 @@ public class Camera2Proxy {
      * a JPEG burst replaces the repeating request, which would end the pair's warm-up under
      * it and return ERROR_CAMERA_BUFFER for the cold lens.
      */
-    private void captureLensPairSequence(File outputDir, RecordingWriter writer) {
+    private void captureLensPairSequence(File outputDir, RecordingWriter writer,
+                                         StillCaptureManager.CaptureMode mode) {
         final java.util.List<String[]> pairs = mStillCaptureManager.configuredLensPairs();
         if (pairs.isEmpty()) {
             Log.w(TAG, "no lens pairs to capture");
@@ -416,11 +420,12 @@ public class Camera2Proxy {
         }
         mStereoSequenceActive = true;
         Log.i(TAG, "lens pair sequence: " + pairs.size() + " pairs");
-        runPair(pairs, 0, outputDir, writer);
+        runPair(pairs, 0, outputDir, writer, mode);
     }
 
     private void runPair(final java.util.List<String[]> pairs, final int i,
-                         final File outputDir, final RecordingWriter writer) {
+                         final File outputDir, final RecordingWriter writer,
+                         final StillCaptureManager.CaptureMode mode) {
         if (mCameraDevice == null || mCaptureSession == null || mStillCaptureManager == null
                 || mPreviewRequestBuilder == null) {
             Log.w(TAG, "pair sequence abandoned at " + i + ": session gone");
@@ -464,12 +469,13 @@ public class Camera2Proxy {
             return;
         }
 
-        mBackgroundHandler.postDelayed(() -> mStillCaptureManager.captureLensPair(
-                mCameraDevice, mCaptureSession, mPreviewRequestBuilder, outputDir, writer,
-                pair), PAIR_WARM_MS);
+        // Kept FROM this warm-up stream, by timestamp, not by a second request. The stream is
+        // at 0.6 and carries both lenses' outputs of every frame; the pair is one of them.
+        mBackgroundHandler.postDelayed(() -> mStillCaptureManager.armPairFromStream(
+                pair, outputDir, writer, mode), PAIR_WARM_MS);
         mBackgroundHandler.postDelayed(() -> {
             if (i + 1 < pairs.size()) {
-                runPair(pairs, i + 1, outputDir, writer);
+                runPair(pairs, i + 1, outputDir, writer, mode);
             } else {
                 mStereoSequenceActive = false;
                 restorePreviewAfterPairs();
@@ -479,6 +485,11 @@ public class Camera2Proxy {
     }
 
     private void restorePreviewAfterPairs() {
+        if (mStillCaptureManager != null) {
+            // An arm that never got both frames is logged here rather than left to the next
+            // arm to notice; its rows, if any, still resolve through the pending list.
+            mStillCaptureManager.finishStreamKeep();
+        }
         if (mCaptureSession == null || mPreviewRequestBuilder == null) {
             return;
         }

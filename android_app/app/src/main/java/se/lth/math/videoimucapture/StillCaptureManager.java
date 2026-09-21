@@ -185,10 +185,7 @@ public class StillCaptureManager {
     private final java.util.LinkedHashMap<String, ImageReader> mLensReaders =
             new java.util.LinkedHashMap<>();
     /** One arming flag per lens: a one-shot capture keeps exactly one frame from each. */
-    private final java.util.LinkedHashMap<String, java.util.concurrent.atomic.AtomicBoolean>
-            mLensWanted = new java.util.LinkedHashMap<>();
     private boolean mStereoSupported;
-    private volatile long mStereoBurstId;
 
     private RecordingWriter mRecordingWriter;
     private File mOutputDir;
@@ -288,7 +285,6 @@ public class StillCaptureManager {
                     STEREO_SIZE.getHeight(), ImageFormat.YUV_420_888, STEREO_READER_DEPTH);
             reader.setOnImageAvailableListener(r -> onStereoImage(r, id, tag), mHandler);
             mLensReaders.put(id, reader);
-            mLensWanted.put(id, new java.util.concurrent.atomic.AtomicBoolean(false));
         }
         mStereoSupported = true;
         Log.i(TAG, "lens streams configured: " + sActiveLensIds
@@ -504,12 +500,15 @@ public class StillCaptureManager {
         final String physicalId, tag;
         final long imageTs, burstId;
         final int index;
-        PeriodicKept(String physicalId, String tag, long imageTs, long burstId, int index) {
+        final CaptureMode mode;   // the periodic run's, or the stream-kept pair's own
+        PeriodicKept(String physicalId, String tag, long imageTs, long burstId, int index,
+                     CaptureMode mode) {
             this.physicalId = physicalId;
             this.tag = tag;
             this.imageTs = imageTs;
             this.burstId = burstId;
             this.index = index;
+            this.mode = mode;
         }
     }
     private final java.util.ArrayList<PeriodicKept> mPeriodicPending = new java.util.ArrayList<>();
@@ -538,10 +537,6 @@ public class StillCaptureManager {
         mStereoBurstSize = 2;
         mPeriodicPending.clear();
         mPeriodicResults.clear();
-        // Any OBJECT arm left over must not steal the first periodic frame.
-        for (java.util.concurrent.atomic.AtomicBoolean want : mLensWanted.values()) {
-            want.set(false);
-        }
         mPeriodicActive = true;
         Log.i(TAG, String.format(java.util.Locale.US,
                 "periodic stereo pairs every %.1f s into %s", mPeriodicIntervalNs / 1e9,
@@ -566,8 +561,8 @@ public class StillCaptureManager {
             // carry a picture with no row. exposure/iso stay 0, which the reader treats as
             // "not recorded", not as a reading (proto3 presence rules, see recording.proto).
             for (PeriodicKept k : mPeriodicPending) {
-                writeStereoMeta(null, k.physicalId, k.tag, k.index, k.burstId,
-                        mPeriodicCaptureMode, k.imageTs);
+                writeStereoMeta(null, k.physicalId, k.tag, k.index, k.burstId, k.mode,
+                        k.imageTs);
             }
             mPeriodicUnmatched += orphans;
             mPeriodicPending.clear();
@@ -588,38 +583,53 @@ public class StillCaptureManager {
 
     /**
      * Every result of the repeating request, from Camera2Proxy's session callback. Cheap when
-     * periodic mode is off; when on, it drives the arming clock and supplies the metadata rows.
+     * nothing is armed; otherwise it drives the periodic arming clock, sets the stream-keep
+     * target, keeps the result window, and resolves kept images waiting for their row.
      */
     public void onRepeatingResult(TotalCaptureResult result) {
-        if (!mPeriodicActive || result == null) {
+        if (result == null) {
+            return;
+        }
+        // Keep going while anything kept is still waiting for its row: a pair from the stream
+        // completes before its results arrive, and the request feeding this may already be
+        // the next warm-up or the restored preview -- the stamps still match.
+        if (!mPeriodicActive && !mStreamKeepActive && mPeriodicPending.isEmpty()) {
             return;
         }
         Long ts = result.get(CaptureResult.SENSOR_TIMESTAMP);
         if (ts == null) {
             return;
         }
-        // Arm on the logical clock. The first result of the recording arms immediately, so a
-        // short clip still gets its first pair within PERIODIC_LEAD_NS of the start.
-        if (ts >= mPeriodicNextDueTs && mPeriodicKeptUw && mPeriodicKeptMain) {
-            mPeriodicTargetTs = ts + PERIODIC_LEAD_NS;
-            mPeriodicBurstId = mPeriodicTargetTs;
-            mPeriodicKeptUw = false;
-            mPeriodicKeptMain = false;
-            mPeriodicNextDueTs = ts + mPeriodicIntervalNs;
-            mPeriodicPairs++;
-        } else if (ts >= mPeriodicNextDueTs) {
-            // The previous arm never completed on one lens (a stream that stopped delivering,
-            // or a frame the reader dropped). Log it, abandon it, and re-arm rather than wait
-            // forever on a frame that is not coming.
-            Log.w(TAG, "periodic pair " + mPeriodicBurstId + " incomplete (uw "
-                    + mPeriodicKeptUw + ", main " + mPeriodicKeptMain + "); re-arming");
-            mPeriodicUnmatched++;
-            mPeriodicTargetTs = ts + PERIODIC_LEAD_NS;
-            mPeriodicBurstId = mPeriodicTargetTs;
-            mPeriodicKeptUw = false;
-            mPeriodicKeptMain = false;
-            mPeriodicNextDueTs = ts + mPeriodicIntervalNs;
-            mPeriodicPairs++;
+        if (mStreamKeepActive && mStreamKeepTargetTs == Long.MAX_VALUE) {
+            // A few frames ahead of NOW, past the image/result lead, so the frames kept are
+            // ones whose results are still to come -- not warm-up frames already in flight,
+            // which is exactly what the still request used to end up with.
+            mStreamKeepTargetTs = ts + PERIODIC_LEAD_NS;
+        }
+        if (mPeriodicActive) {
+            // Arm on the logical clock. The first result of the recording arms immediately,
+            // so a short clip still gets its first pair within PERIODIC_LEAD_NS of the start.
+            if (ts >= mPeriodicNextDueTs && mPeriodicKeptUw && mPeriodicKeptMain) {
+                mPeriodicTargetTs = ts + PERIODIC_LEAD_NS;
+                mPeriodicBurstId = mPeriodicTargetTs;
+                mPeriodicKeptUw = false;
+                mPeriodicKeptMain = false;
+                mPeriodicNextDueTs = ts + mPeriodicIntervalNs;
+                mPeriodicPairs++;
+            } else if (ts >= mPeriodicNextDueTs) {
+                // The previous arm never completed on one lens (a stream that stopped
+                // delivering, or a frame the reader dropped). Log it, abandon it, and re-arm
+                // rather than wait forever on a frame that is not coming.
+                Log.w(TAG, "periodic pair " + mPeriodicBurstId + " incomplete (uw "
+                        + mPeriodicKeptUw + ", main " + mPeriodicKeptMain + "); re-arming");
+                mPeriodicUnmatched++;
+                mPeriodicTargetTs = ts + PERIODIC_LEAD_NS;
+                mPeriodicBurstId = mPeriodicTargetTs;
+                mPeriodicKeptUw = false;
+                mPeriodicKeptMain = false;
+                mPeriodicNextDueTs = ts + mPeriodicIntervalNs;
+                mPeriodicPairs++;
+            }
         }
         // Keep a short window of results so a kept image can find its own frame's metadata.
         mPeriodicResults.put(ts, result);
@@ -631,13 +641,13 @@ public class StillCaptureManager {
         for (java.util.Iterator<PeriodicKept> it = mPeriodicPending.iterator(); it.hasNext(); ) {
             PeriodicKept k = it.next();
             if (Math.abs(k.imageTs - ts) <= PERIODIC_MATCH_NS) {
-                writeStereoMeta(result, k.physicalId, k.tag, k.index, k.burstId,
-                        mPeriodicCaptureMode, k.imageTs);
+                writeStereoMeta(result, k.physicalId, k.tag, k.index, k.burstId, k.mode,
+                        k.imageTs);
                 it.remove();
             } else if (ts - k.imageTs > PERIODIC_RECENT_RESULTS * 40_000_000L) {
                 // Its result is not coming. Write the row from the image alone.
-                writeStereoMeta(null, k.physicalId, k.tag, k.index, k.burstId,
-                        mPeriodicCaptureMode, k.imageTs);
+                writeStereoMeta(null, k.physicalId, k.tag, k.index, k.burstId, k.mode,
+                        k.imageTs);
                 mPeriodicUnmatched++;
                 it.remove();
             }
@@ -680,95 +690,13 @@ public class StillCaptureManager {
         return true;
     }
 
-    /**
-     * One frame from each lens, in a single request, so both shutters open together.
-     * Simultaneity is the whole point: a pair taken sequentially across a moving
-     * handheld camera has an unknown baseline, which is exactly what the factory
-     * 18.02 mm was going to supply.
-     */
-    public void captureStereoPair(CameraDevice device, CameraCaptureSession session,
-                                  CaptureRequest.Builder baseRequest, File outputDir,
-                                  RecordingWriter writer) {
-        if (!mStereoSupported || session == null) {
-            Log.w(TAG, "stereo capture requested but unavailable");
-            return;
-        }
-        mOutputDir = outputDir;
-        mRecordingWriter = writer;
-        mStereoBurstId = SystemClock.elapsedRealtimeNanos();
-        // Arm exactly one frame per lens; every other warm-up frame is drained and
-        // discarded. Every CONFIGURED lens fires: with the metric pair configured this is the
-        // 18.02 mm pair as before, and with the all-lens set it is one simultaneous frame from
-        // every rear camera the device has.
-        mStereoBurstSize = Math.max(2, mLensReaders.size());
-        mOneShotImageTs.clear();
-        for (java.util.concurrent.atomic.AtomicBoolean want : mLensWanted.values()) {
-            want.set(true);
-        }
-        try {
-            // The builder must be created FOR the physical cameras it will address.
-            // setPhysicalCameraKey validates its id against the set the builder was made
-            // with, and a builder from the plain createCaptureRequest has an EMPTY set —
-            // so it threw `Physical camera id: 2 is not valid!`, the whole stereo capture
-            // was abandoned, and the only frames that reached disk were warm-up frames
-            // from the repeating request. Those looked like a stereo pair and were not
-            // one: no per-physical crop, no capture callback, no metadata. The first
-            // attempt at the crop fix never ran at all — it threw before it could be
-            // tested, and the "still cropped" measurement was of the wrong frames.
-            CaptureRequest.Builder b;
-            if (Build.VERSION.SDK_INT >= 28) {
-                b = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE,
-                        new java.util.HashSet<>(mLensReaders.keySet()));
-            } else {
-                b = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-            }
-            copyBase(baseRequest, b, false);
-            applyFullFieldOfView(b);
-            // Each lens delivers its OWN full array. The periodic path has asked for this
-            // since #36; the one-shot never did, so the extra lenses would have arrived at
-            // whatever crop the HAL chose and the recorded crop_region would have been the
-            // only warning. It is a geometry capture: the frames have to be the lens's own.
-            applyPhysicalFullArrays(b);
-            for (ImageReader r : mLensReaders.values()) {
-                b.addTarget(r.getSurface());
-            }
-            session.capture(b.build(), mStereoCallback, mHandler);
-            Log.i(TAG, "simultaneous lens capture requested: physical "
-                    + mLensReaders.keySet());
-        } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
-            Log.e(TAG, "stereo capture failed: " + e);
-        }
-    }
-
-    private final CameraCaptureSession.CaptureCallback mStereoCallback =
-            new CameraCaptureSession.CaptureCallback() {
-                @Override
-                public void onCaptureCompleted(@NonNull CameraCaptureSession session,
-                                               @NonNull CaptureRequest request,
-                                               @NonNull TotalCaptureResult result) {
-                    // Both metadata rows are written HERE, not in the image handlers.
-                    // The images arrive first — measured: the pair landed with
-                    // exposure 0, iso 0 and timestamp 0 because the handlers ran before
-                    // this callback, the same race that broke DNG writing. The
-                    // filenames are deterministic from the burst id, so nothing has to
-                    // wait for the pixels.
-                    int index = 0;
-                    for (String id : mLensReaders.keySet()) {
-                        writeStereoMeta(result, id, lensTag(id), index++);
-                    }
-                }
-            };
-
-    private volatile long mStereoResultTimeNs;
-    private volatile long mStereoExposureNs;
-    private volatile int mStereoIso;
-
     private void onStereoImage(ImageReader reader, String physicalId, String tag) {
         final byte[] nv21;
         final int w, h;
         final long imageTs;
         final long burstId;
         final boolean periodic;
+        final boolean streamKept;
         try (Image image = reader.acquireNextImage()) {
             if (image == null) {
                 return;
@@ -782,22 +710,24 @@ public class StillCaptureManager {
             // In periodic mode (#36) the same drain runs for the whole recording, and the
             // arm is a target timestamp rather than a flag.
             imageTs = image.getTimestamp();
-            if (mPeriodicActive) {
+            if (mStreamKeepActive) {
+                // A one-shot pair, chosen from the stream by timestamp (see armPairFromStream).
+                if (!streamKeep(physicalId, imageTs)) {
+                    return;
+                }
                 periodic = true;
+                streamKept = true;
+                burstId = mStreamKeepBurstId;
+            } else if (mPeriodicActive) {
+                periodic = true;
+                streamKept = false;
                 if (!periodicKeep(physicalId, imageTs)) {
                     return;
                 }
                 burstId = mPeriodicBurstId;
             } else {
-                periodic = false;
-                java.util.concurrent.atomic.AtomicBoolean want = mLensWanted.get(physicalId);
-                if (want == null || !want.compareAndSet(true, false)) {
-                    return;
-                }
-                burstId = mStereoBurstId;
-                // The row for this lens is written from the capture callback, which on this
-                // hardware runs AFTER the image lands; leave the stamp where it can find it.
-                mOneShotImageTs.put(physicalId, imageTs);
+                // Nothing armed: every frame is drained and discarded.
+                return;
             }
             // Copy the planes out and release the buffer. The JPEG encode is NOT done here:
             // this is the camera handler, which also carries every capture result and, in
@@ -833,22 +763,18 @@ public class StillCaptureManager {
             // Still on the camera handler, same thread as onRepeatingResult, so the pending
             // list and the result window need no lock. Match now if the result is already
             // here; otherwise the result's arrival writes the row.
-            int index = sPhysUltrawide.equals(physicalId) ? 0 : 1;
+            int index = streamKept
+                    ? (physicalId.equals(mStreamKeepPair[0]) ? 0 : 1)
+                    : (sPhysUltrawide.equals(physicalId) ? 0 : 1);
+            CaptureMode mode = streamKept ? mStreamKeepMode : mPeriodicCaptureMode;
             TotalCaptureResult r = nearestPeriodicResult(imageTs);
             if (r != null) {
-                writeStereoMeta(r, physicalId, tag, index, burstId, mPeriodicCaptureMode,
-                        imageTs);
+                writeStereoMeta(r, physicalId, tag, index, burstId, mode, imageTs);
             } else {
-                mPeriodicPending.add(new PeriodicKept(physicalId, tag, imageTs, burstId, index));
+                mPeriodicPending.add(new PeriodicKept(physicalId, tag, imageTs, burstId, index,
+                        mode));
             }
         }
-    }
-
-    /** The OBJECT-station pair: burst id and mode are the composite's. */
-    private void writeStereoMeta(TotalCaptureResult result, String physicalId,
-                                 String tag, int index) {
-        writeStereoMeta(result, physicalId, tag, index, mStereoBurstId, CaptureMode.OBJECT,
-                mOneShotImageTs.getOrDefault(physicalId, 0L));
     }
 
     /**
@@ -1148,19 +1074,6 @@ public class StillCaptureManager {
      */
     private volatile int mStereoBurstSize = 2;
 
-    /**
-     * The stamp of the frame each lens KEPT for the one-shot burst in flight, by physical id.
-     *
-     * The periodic path records the image's own timestamp; the one-shot path wrote 0 and the
-     * row fell back to the per-physical result's stamp -- which on this HAL can sit up to
-     * 99 ms from its partner's within ONE request (measured 2026-09-20, the S2 clock quirk).
-     * So the rows could not say whether a pair was simultaneous, nor whether the kept pixels
-     * were the request's frame or a warm-up frame that happened to be passing. Cleared when
-     * the burst is armed, so a stale stamp can never be attributed to the next one.
-     */
-    private final java.util.concurrent.ConcurrentHashMap<String, Long> mOneShotImageTs =
-            new java.util.concurrent.ConcurrentHashMap<>();
-
     public int oneShotStereoBursts() {
         return mOneShotBursts;
     }
@@ -1174,87 +1087,85 @@ public class StillCaptureManager {
         mStereoMetaRows = 0;
     }
 
+    // ------------------------------------------------------------ a pair from the stream
+    //
+    // ONE PAIR, CHOSEN FROM THE WARMED STREAM BY TIMESTAMP, its rows written from the matching
+    // repeating result. This replaces the one-shot still request, and field 29
+    // (logical_result_time_ns) is why: on every burst of the 19:53 L1 sequence the kept
+    // pixels were a warm-up frame 213-634 ms OLDER than the request's frame, because an armed
+    // reader keeps the next image it sees and the warm-up's frames were already in flight.
+    // The row then described the request's frame -- its exposure, its ISO, a zoom_ratio of
+    // 1.00 -- while the file held a frame the HAL had produced at 0.6. Half the pairs were
+    // also one frame apart, each lens having kept its own next image.
+    //
+    // The warm-up stream is already at the widest zoom and already carries both physical
+    // outputs of every frame, so the frame worth keeping is IN it. So: arm a target stamp a
+    // few frames ahead of the current result (past the image/result lead -- the periodic
+    // path's trick, PERIODIC_LEAD_NS), keep the first image at or after it from each lens
+    // (the same sensor period on both, being outputs of one request), and write each row
+    // from the repeating result whose stamp matches the image's, via the same pending list
+    // the periodic path uses. No second request, nothing kept that was not asked for, and
+    // the row describes the pixels.
+
+    private volatile boolean mStreamKeepActive = false;
+    private String[] mStreamKeepPair = null;
+    private long mStreamKeepTargetTs = Long.MAX_VALUE;
+    private long mStreamKeepBurstId = 0L;
+    private CaptureMode mStreamKeepMode = CaptureMode.OBJECT;
+    private final java.util.Set<String> mStreamKeepDone = new java.util.HashSet<>();
+
     /**
-     * One simultaneous frame from exactly the two lenses named, as its own burst.
-     *
-     * The caller has already put these two physical streams into the repeating request and
-     * let the second sensor settle. Only these two readers are armed and only these two
-     * surfaces are targeted; the callback writes metadata for these two and no other, because
-     * a lens that was not in the request has no physical result and would otherwise be
-     * written a row from the logical result -- a picture that does not exist, described.
+     * Arm one pair from the stream. The caller has already put exactly these two physical
+     * streams into the repeating request, at the widest zoom, and let them settle.
      */
-    public void captureLensPair(CameraDevice device, CameraCaptureSession session,
-                                CaptureRequest.Builder baseRequest, File outputDir,
-                                RecordingWriter writer, final String[] pair) {
-        if (!mStereoSupported || session == null || pair == null || pair.length != 2) {
-            Log.w(TAG, "pair capture requested but unavailable");
+    public void armPairFromStream(String[] pair, File outputDir, RecordingWriter writer,
+                                  CaptureMode mode) {
+        if (!mStereoSupported || pair == null || pair.length != 2) {
+            Log.w(TAG, "pair from stream requested but unavailable");
             return;
         }
         if (!mLensReaders.containsKey(pair[0]) || !mLensReaders.containsKey(pair[1])) {
             Log.w(TAG, "pair " + pair[0] + "+" + pair[1] + " is not configured");
             return;
         }
+        finishStreamKeep();
         mOutputDir = outputDir;
         mRecordingWriter = writer;
-        mStereoBurstId = SystemClock.elapsedRealtimeNanos();
+        mStreamKeepPair = pair;
+        mStreamKeepMode = mode;
+        mStreamKeepBurstId = SystemClock.elapsedRealtimeNanos();
+        mStreamKeepTargetTs = Long.MAX_VALUE;      // set by the next repeating result
+        mStreamKeepDone.clear();
         mStereoBurstSize = 2;
-        mOneShotImageTs.clear();
-        for (java.util.Map.Entry<String, java.util.concurrent.atomic.AtomicBoolean> e
-                : mLensWanted.entrySet()) {
-            e.getValue().set(e.getKey().equals(pair[0]) || e.getKey().equals(pair[1]));
+        mStreamKeepActive = true;
+        mOneShotBursts++;
+        Log.i(TAG, "pair from stream armed: physical " + pair[0] + "+" + pair[1] + " ("
+                + lensTag(pair[0]) + "+" + lensTag(pair[1]) + ") burst " + mStreamKeepBurstId);
+    }
+
+    /** Whether a stream-kept frame is kept. Camera handler, inside the acquire: immediate. */
+    private boolean streamKeep(String physicalId, long imageTs) {
+        if (!mStreamKeepActive || imageTs < mStreamKeepTargetTs) {
+            return false;
         }
-        try {
-            CaptureRequest.Builder b;
-            if (Build.VERSION.SDK_INT >= 28) {
-                b = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE,
-                        new java.util.HashSet<>(java.util.Arrays.asList(pair)));
-            } else {
-                b = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-            }
-            copyBase(baseRequest, b, false);
-            applyFullFieldOfView(b);
-            if (Build.VERSION.SDK_INT >= 28) {
-                for (String pid : pair) {
-                    Rect active = physicalActiveArray(pid);
-                    if (active != null) {
-                        try {
-                            b.setPhysicalCameraKey(CaptureRequest.SCALER_CROP_REGION, active,
-                                    pid);
-                        } catch (IllegalArgumentException e) {
-                            Log.w(TAG, "physical " + pid + " crop refused: " + e);
-                        }
-                    }
-                }
-            }
-            for (String pid : pair) {
-                b.addTarget(mLensReaders.get(pid).getSurface());
-            }
-            final long burstId = mStereoBurstId;
-            session.capture(b.build(), new CameraCaptureSession.CaptureCallback() {
-                @Override
-                public void onCaptureCompleted(@NonNull CameraCaptureSession s,
-                                               @NonNull CaptureRequest request,
-                                               @NonNull TotalCaptureResult result) {
-                    writeStereoMeta(result, pair[0], lensTag(pair[0]), 0, burstId,
-                            CaptureMode.OBJECT, mOneShotImageTs.getOrDefault(pair[0], 0L));
-                    writeStereoMeta(result, pair[1], lensTag(pair[1]), 1, burstId,
-                            CaptureMode.OBJECT, mOneShotImageTs.getOrDefault(pair[1], 0L));
-                }
-            }, mHandler);
-            mOneShotBursts++;
-            Log.i(TAG, "pair capture requested: physical " + pair[0] + "+" + pair[1]
-                    + " (" + lensTag(pair[0]) + "+" + lensTag(pair[1]) + ") burst " + burstId);
-        } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
-            Log.e(TAG, "pair capture failed: " + e);
-            // DISARM. The warm-up request is still streaming into these readers, and an
-            // armed reader keeps the next frame it sees whatever request produced it. Left
-            // armed after a failed capture, both lenses wrote a warm-up frame under this
-            // burst id -- a pair-shaped file with no crop and no metadata row, which is what
-            // five of the six bursts of the first L1 sequence were. A failed pair must leave
-            // nothing on the card, so the receipt's armed-versus-complete count can see it.
-            for (java.util.concurrent.atomic.AtomicBoolean want : mLensWanted.values()) {
-                want.set(false);
-            }
+        if (!physicalId.equals(mStreamKeepPair[0]) && !physicalId.equals(mStreamKeepPair[1])) {
+            return false;
+        }
+        if (!mStreamKeepDone.add(physicalId)) {
+            return false;
+        }
+        if (mStreamKeepDone.size() == 2) {
+            mStreamKeepActive = false;     // the rows still resolve through the pending list
+        }
+        return true;
+    }
+
+    /** End an arm that did not complete, and say so. A no-op after a complete one. */
+    public void finishStreamKeep() {
+        if (mStreamKeepActive) {
+            Log.w(TAG, "pair from stream " + mStreamKeepBurstId + " incomplete: kept "
+                    + mStreamKeepDone + " of " + java.util.Arrays.toString(mStreamKeepPair));
+            mStreamKeepActive = false;
         }
     }
 
@@ -1354,7 +1265,6 @@ public class StillCaptureManager {
             r.close();
         }
         mLensReaders.clear();
-        mLensWanted.clear();
         mStereoSupported = false;
     }
 
@@ -1549,8 +1459,8 @@ public class StillCaptureManager {
         // L1 sequence on 2026-09-20 -- and the readers, already armed, kept warm-up frames
         // in their place: files that looked like pairs, with no crop, no metadata row and no
         // guarantee of one sensor period. Every caller applies crops for exactly the ids in
-        // ITS request (captureStereoPair via applyPhysicalFullArrays, captureLensPair for
-        // its own two), which is the only place that knows them.
+        // ITS request, which is the only place that knows them. (Since the stream-keep change
+        // the one-shot pair issues no request at all; only the periodic path applies them.)
     }
 
     /**

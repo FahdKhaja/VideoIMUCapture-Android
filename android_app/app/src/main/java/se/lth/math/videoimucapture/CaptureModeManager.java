@@ -500,7 +500,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             Camera2Proxy p = mActivity.getmCamera2Proxy();
             if (p != null) {
                 Log.i(TAG, "firing the run's anchoring stereo pair");
-                p.captureStereoPair(dir, writer);
+                p.captureStereoPair(dir, writer, cm);
             }
         }, 1800L);
     }
@@ -699,7 +699,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
                 notifyState(multiLens ? "OBJECT · lens pairs (metric scale + baselines)"
                         : "OBJECT · stereo pair (metric scale)");
                 scm.resetOneShotBursts();
-                proxy.captureStereoPair(dir, writer);
+                proxy.captureStereoPair(dir, writer, StillCaptureManager.CaptureMode.OBJECT);
             }, 10000L);
         }
 
