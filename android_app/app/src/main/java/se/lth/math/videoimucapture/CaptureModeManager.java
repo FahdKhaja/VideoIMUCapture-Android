@@ -302,8 +302,19 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
      * looks, in a receipt that only counts files, exactly like a normal metric-pair run.
      */
     private void noteLensSet(SessionManifest manifest) {
-        manifest.noteLensSet(StillCaptureManager.allLensShot() ? "all" : "pair",
-                StillCaptureManager.activeLensIds().size());
+        Camera2Proxy proxy = mActivity.getmCamera2Proxy();
+        int configured = StillCaptureManager.activeLensIds().size();
+        // How many lenses this session's stereo was ASKED to deliver, which is not always how
+        // many were configured: the periodic path targets the metric pair by design whatever
+        // the session was built with (its request also drives the video), so a periodic
+        // session on the all-lens set delivering two lenses is the intended outcome. W1/W2
+        // on 2026-09-20 read "4 lenses configured, 2 delivered" and disagreed with two
+        // perfectly good clips.
+        boolean periodic = proxy != null && proxy.periodicStereoPairs() > 0
+                && proxy.oneShotStereoBursts() == 0;
+        int expected = periodic ? Math.min(2, configured) : configured;
+        manifest.noteLensSet(StillCaptureManager.allLensShot() ? "all" : "pair", configured,
+                expected);
     }
 
     private void sealSession() {

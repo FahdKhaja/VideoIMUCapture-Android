@@ -559,7 +559,7 @@ public class Camera2Proxy {
             for (Surface s : mStillCaptureManager.getMetricPairSurfaces().values()) {
                 b.addTarget(s);
             }
-            mStillCaptureManager.applyPhysicalFullArrays(b);
+            mStillCaptureManager.applyPhysicalFullArrays(b, StillCaptureManager.stereoPhysicalIds());
             // NO widest-zoom here, deliberately. This request also drives the VIDEO for the
             // whole clip, and at 0.6 the logical camera switches master to the ultrawide --
             // every walk would be shot on the wide lens. So periodic pairs inside a video keep

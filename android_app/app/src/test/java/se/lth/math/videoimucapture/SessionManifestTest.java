@@ -231,7 +231,7 @@ public class SessionManifestTest {
         assertEquals(2, root.getJSONObject("measured").getInt("lenses_seen"));
         assertFalse("half the lenses are missing", root.getBoolean("agrees"));
         assertTrue(root.getString("summary"),
-                root.getString("summary").contains("4 lenses configured, 2 delivered"));
+                root.getString("summary").contains("4 lenses expected, 2 delivered"));
     }
 
     /**
@@ -285,7 +285,7 @@ public class SessionManifestTest {
         JSONObject root = read(dir);
         assertEquals(3, root.getJSONObject("measured").getInt("lenses_seen"));
         assertFalse(root.getBoolean("agrees"));
-        assertTrue(root.getString("summary").contains("4 lenses configured, 3 delivered"));
+        assertTrue(root.getString("summary").contains("4 lenses expected, 3 delivered"));
     }
 
     @Test
@@ -448,6 +448,37 @@ public class SessionManifestTest {
         JSONObject root = read(dir);
         assertTrue(root.getBoolean("agrees"));
         assertFalse(root.getString("summary").contains("NO METADATA"));
+    }
+
+    /**
+     * A periodic session on the all-lens set: four configured, two delivered, on purpose.
+     *
+     * The periodic path targets the metric pair whatever the session was built with, because
+     * its request also drives the video. W1 and W2 on 2026-09-20 -- two clean 12-second clips
+     * with twelve pairs each -- read "4 lenses configured, 2 delivered" and disagreed. What
+     * the receipt has to judge against is what the stereo was ASKED to deliver.
+     */
+    @Test
+    public void aPeriodicSessionOnTheAllLensSetExpectsThePair() throws Exception {
+        File dir = mFolder.newFolder("testW1_walk_vid");
+        touch(dir, "video_recording.mp4", 4096);
+        for (int i = 0; i < 12; i++) {
+            touch(dir, "stereo_" + (5000 + i) + "_uw.jpg", 16);
+            touch(dir, "stereo_" + (5000 + i) + "_main.jpg", 16);
+        }
+        SessionManifest m = manifest(dir, "WALK");
+        m.noteVideoRequested();
+        m.noteLensSet("all", 4, 2);     // built with four, asked for the pair
+        m.noteStereoPairs(12);
+        m.noteStereoMetaRows(24);
+        m.write(null);
+
+        JSONObject root = read(dir);
+        assertEquals(4, root.getJSONObject("expected").getInt("lenses_configured"));
+        assertEquals(2, root.getJSONObject("expected").getInt("lenses_expected"));
+        assertEquals(2, root.getJSONObject("measured").getInt("lenses_seen"));
+        assertTrue(root.getString("summary"), root.getBoolean("agrees"));
+        assertFalse(root.getString("summary").contains("expected"));
     }
 
     @Test

@@ -535,6 +535,10 @@ public class StillCaptureManager {
         mPeriodicPairs = 0;
         mPeriodicUnmatched = 0;
         mStereoBurstSize = 2;
+        // This session's counts start here. The row counter was only reset by a stills run or
+        // the OBJECT stage, so a second video clip reported its rows on top of the first's
+        // (W1 24, W2 48 on 2026-09-20) and a third would have said 72.
+        resetOneShotBursts();
         mPeriodicPending.clear();
         mPeriodicResults.clear();
         mPeriodicActive = true;
@@ -973,15 +977,22 @@ public class StillCaptureManager {
      * same keys the OBJECT pair does; whether the HAL honours them is what crop_region
      * on each row records.
      */
-    public void applyPhysicalFullArrays(CaptureRequest.Builder b) {
+    /**
+     * @param ids the physical ids the builder was CREATED for. setPhysicalCameraKey validates
+     *            against that set, so iterating every configured reader against a builder made
+     *            for the metric pair threw "Physical camera id: 6 is not valid!" on every clip
+     *            (caught, logged, and wrong).
+     */
+    public void applyPhysicalFullArrays(CaptureRequest.Builder b,
+                                        java.util.Collection<String> ids) {
         if (Build.VERSION.SDK_INT < 28) {
             return;
         }
-        // EVERY configured lens, not just the metric pair. A telephoto that comes back
-        // cropped is not a smaller picture, it is a picture whose focal length in pixels no
-        // longer follows from the factory intrinsics by the stream's scale factor -- and that
-        // scaling is the whole of how G1/G2 turn a disparity into a baseline in millimetres.
-        for (String pid : mLensReaders.keySet()) {
+        // Each lens's own full array. A telephoto that comes back cropped is not a smaller
+        // picture, it is a picture whose focal length in pixels no longer follows from the
+        // factory intrinsics by the stream's scale factor -- and that scaling is the whole of
+        // how G1/G2 turn a disparity into a baseline in millimetres.
+        for (String pid : ids) {
             Rect active = physicalActiveArray(pid);
             if (active != null) {
                 try {

@@ -64,6 +64,7 @@ public final class SessionManifest {
     private int mBatteryAtEnd = -1;
     private String mLensSet = null;
     private int mLensesConfigured = -1;
+    private int mLensesExpected = -1;
     private int mCameraError = -1;
     private long mCameraErrorAtMs = -1;
     private int mStereoMetaRows = -1;
@@ -141,8 +142,19 @@ public final class SessionManifest {
      * delivered is a finding; two configured and two delivered is a normal clip.
      */
     public void noteLensSet(String set, int configured) {
+        noteLensSet(set, configured, configured);
+    }
+
+    /**
+     * @param configured how many physical lenses the session was BUILT with
+     * @param expected   how many its stereo was ASKED to deliver -- the same, except for a
+     *                   periodic session on the all-lens set, whose request targets the metric
+     *                   pair by design and delivers two of four on purpose
+     */
+    public void noteLensSet(String set, int configured, int expected) {
         mLensSet = set;
         mLensesConfigured = configured;
+        mLensesExpected = expected;
     }
 
     /**
@@ -251,6 +263,7 @@ public final class SessionManifest {
             if (mLensSet != null) {
                 expected.put("lens_set", mLensSet);
                 expected.put("lenses_configured", mLensesConfigured);
+                expected.put("lenses_expected", mLensesExpected);
             }
             if (mStereoMetaRows >= 0) {
                 expected.put("stereo_meta_rows", mStereoMetaRows);
@@ -457,8 +470,8 @@ public final class SessionManifest {
         }
         // Across the session, not within one burst: on this phone a request can run two
         // sensors, so every lens delivering means every lens appearing in SOME pair.
-        if (mLensesConfigured > 0 && measured.optInt("stereo_bursts_seen", 0) > 0
-                && measured.optInt("lenses_seen", 0) < mLensesConfigured) {
+        if (mLensesExpected > 0 && measured.optInt("stereo_bursts_seen", 0) > 0
+                && measured.optInt("lenses_seen", 0) < mLensesExpected) {
             return false;
         }
         // A stereo file with no metadata row is a warm-up frame, not a capture.
@@ -504,10 +517,10 @@ public final class SessionManifest {
             sb.append(" — ").append(missing).append(" OF ").append(mStillsFired)
                     .append(" STILLS NEVER REACHED THE CARD");
         }
-        if (mLensesConfigured > 0 && measured.optInt("stereo_bursts_seen", 0) > 0) {
+        if (mLensesExpected > 0 && measured.optInt("stereo_bursts_seen", 0) > 0) {
             int got = measured.optInt("lenses_seen", 0);
-            if (got < mLensesConfigured) {
-                sb.append(" — ").append(mLensesConfigured).append(" lenses configured, ")
+            if (got < mLensesExpected) {
+                sb.append(" — ").append(mLensesExpected).append(" lenses expected, ")
                         .append(got).append(" delivered");
             }
         }
