@@ -147,6 +147,11 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
      * @return the directory the video and its metadata belong in, or null on failure.
      */
     public File beginVideoSession() {
+        // THE RECORDING GETS THE REPEATING REQUEST, and gets it before its first frame. A pair
+        // warm-up in flight is ended here, whichever branch follows: see
+        // StereoRequests.cancelPairs for what M3 looked like when nothing did this.
+        Camera2Proxy early = mActivity.getmCamera2Proxy();
+        final int[] cut = early == null ? null : early.cancelStereoPairs("video starting");
         if (mRunning && mRunDir != null) {
             // A stills run is already up: join it rather than opening a second writer over
             // the top of the first. One session, one clock, one directory.
@@ -154,6 +159,11 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             mVideoActive = true;
             if (mManifest != null) {
                 mManifest.noteVideoRequested();
+                if (cut != null) {
+                    // The run's own anchor, cut short on purpose. Said in the receipt, so that
+                    // "two pairs of six" reads as a decision and not as four lost captures.
+                    mManifest.notePairSequenceCut(cut[0], cut[1], "video joined");
+                }
             }
             notifyState(mMode + " · stills + video");
             Log.i(TAG, "video joining the active " + mMode + " run in " + mRunDir);
@@ -454,6 +464,12 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         final RecordingWriter writer = mWriter;
         mMain.postDelayed(() -> {
             if (!mRunning) {
+                return;
+            }
+            if (mVideoActive) {
+                // Asked at the moment of firing, not only when this was scheduled: a video that
+                // joined in the last 1.8 s is recording on the request this would replace.
+                Log.i(TAG, "video joined before the anchor pair fired: leaving it to the interval");
                 return;
             }
             Camera2Proxy p = mActivity.getmCamera2Proxy();

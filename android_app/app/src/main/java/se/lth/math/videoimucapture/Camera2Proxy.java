@@ -250,6 +250,14 @@ public class Camera2Proxy {
         mStereoRequests.capturePair(outputDir, writer, mode);
     }
 
+    /**
+     * End any pair warm-up in flight, because a recording is about to need the repeating
+     * request. Returns {pairs armed, pairs planned}, or null if nothing was in flight.
+     */
+    public int[] cancelStereoPairs(String why) {
+        return mStereoRequests.cancelPairs(why);
+    }
+
     /** Whether a pair sequence is between its first warm-up and its final preview restore. */
     public boolean isStereoSequenceActive() {
         return mStereoRequests.sequenceActive();

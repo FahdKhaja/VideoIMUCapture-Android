@@ -44,7 +44,9 @@ final class StereoRequests {
     }
 
     /** The session is going away: no request to restore, just the bookkeeping. */
-    void sessionGone() {
+    synchronized void sessionGone() {
+        mGeneration++;
+        mPairsInFlight = false;
         mPeriodicStereo = false;
         mStereoSequenceActive = false;
         StereoCapture s = stereo();
@@ -95,14 +97,61 @@ final class StereoRequests {
                 && mHost.previewBuilder() != null && stereo() != null;
     }
 
+    // ------------------------------------------------------------------ ending pairs early
+    //
+    // A pair warm-up REPLACES the repeating request, and a recording is fed by the repeating
+    // request. Pairs are never started under a recording -- but a recording can start under
+    // pairs, and until 2026-09-21 nothing handled that: in M3 (stills, then video four seconds
+    // later, on the all-lens set) the six-pair sequence was a third of the way through when the
+    // video joined, and for five seconds the clip was fed by TEMPLATE_PREVIEW warm-ups at the
+    // widest zoom. It cost the file three or four frame rows at every swap (issue #3), and
+    // whether those frames are even the main camera's is not something the file can say.
+    //
+    // The recording wins. Pairs can be shot again; five seconds of a walk cannot. The steps of
+    // a pair or a sequence are delayed posts, so ending one means making its remaining steps
+    // no-ops: each carries the generation it was started under, and cancelPairs() moves the
+    // generation on. Steps and cancel are synchronized on this object, so a step is either
+    // wholly before the cancel -- and the restore that follows undoes it -- or sees it.
+
+    private int mGeneration = 0;
+    private boolean mPairsInFlight = false;
+    private int mPairsPlanned = 0;
+    private int mPairsArmed = 0;
+
+    /**
+     * End whatever pair warm-up is in flight and put the preview back.
+     *
+     * @return {pairs armed, pairs planned} if something was in flight, else null. Armed, not
+     * kept: a pair armed in the last hundred milliseconds may not have both frames, and the
+     * receipt is what says so.
+     */
+    synchronized int[] cancelPairs(String why) {
+        if (!mPairsInFlight) {
+            return null;
+        }
+        mGeneration++;
+        mPairsInFlight = false;
+        mStereoSequenceActive = false;
+        mHost.restorePreview(why);
+        Log.i(TAG, "pairs ended early (" + why + "): " + mPairsArmed + " of " + mPairsPlanned
+                + " armed");
+        return new int[]{mPairsArmed, mPairsPlanned};
+    }
+
     /** Arm on the camera thread after the warm-up has run; a no-op if the session has gone. */
     private void armAfter(long delayMs, final String[] pair, final File outputDir,
                           final RecordingWriter writer,
-                          final StillCaptureManager.CaptureMode mode) {
+                          final StillCaptureManager.CaptureMode mode, final int generation) {
         mHost.handler().postDelayed(() -> {
-            StereoCapture s = stereo();
-            if (s != null) {
-                s.armPairFromStream(pair, outputDir, writer, mode);
+            synchronized (StereoRequests.this) {
+                if (generation != mGeneration) {
+                    return;
+                }
+                StereoCapture s = stereo();
+                if (s != null) {
+                    s.armPairFromStream(pair, outputDir, writer, mode);
+                    mPairsArmed++;
+                }
             }
         }, delayMs);
     }
@@ -124,8 +173,8 @@ final class StereoRequests {
      * not left running — that is real power and heat for a capability used once per
      * composite.
      */
-    void capturePair(File outputDir, RecordingWriter writer,
-                     StillCaptureManager.CaptureMode mode) {
+    synchronized void capturePair(File outputDir, RecordingWriter writer,
+                                  StillCaptureManager.CaptureMode mode) {
         if (!supported() || !sessionReady()) {
             return;
         }
@@ -148,12 +197,23 @@ final class StereoRequests {
         try {
             mHost.setRepeating(buildWarmRequest(stereo, stereo.getStereoSurfaces().values()));
             Log.d(TAG, "stereo warm-up streaming");
+            final int generation = ++mGeneration;
+            mPairsInFlight = true;
+            mPairsPlanned = 1;
+            mPairsArmed = 0;
 
             // Kept FROM the warm-up stream, not by a second request: see armPairFromStream.
             armAfter(900L, new String[]{LensRoles.physUltrawide(), LensRoles.physMain()},
-                    outputDir, writer, mode);
-            mHost.handler().postDelayed(
-                    () -> mHost.restorePreview("stereo warm-up ended"), 2200L);
+                    outputDir, writer, mode, generation);
+            mHost.handler().postDelayed(() -> {
+                synchronized (StereoRequests.this) {
+                    if (generation != mGeneration) {
+                        return;
+                    }
+                    mPairsInFlight = false;
+                    mHost.restorePreview("stereo warm-up ended");
+                }
+            }, 2200L);
         } catch (CameraAccessException | IllegalStateException e) {
             Log.e(TAG, "stereo warm-up failed: " + e);
         }
@@ -195,16 +255,24 @@ final class StereoRequests {
             return;
         }
         mStereoSequenceActive = true;
+        mPairsInFlight = true;
+        mPairsPlanned = pairs.size();
+        mPairsArmed = 0;
         Log.i(TAG, "lens pair sequence: " + pairs.size() + " pairs");
-        runPair(pairs, 0, outputDir, writer, mode);
+        runPair(pairs, 0, outputDir, writer, mode, ++mGeneration);
     }
 
-    private void runPair(final List<String[]> pairs, final int i,
-                         final File outputDir, final RecordingWriter writer,
-                         final StillCaptureManager.CaptureMode mode) {
+    private synchronized void runPair(final List<String[]> pairs, final int i,
+                                      final File outputDir, final RecordingWriter writer,
+                                      final StillCaptureManager.CaptureMode mode,
+                                      final int generation) {
+        if (generation != mGeneration) {
+            return;     // ended early; the preview is already back
+        }
         if (!sessionReady()) {
             Log.w(TAG, "pair sequence abandoned at " + i + ": session gone");
             mStereoSequenceActive = false;
+            mPairsInFlight = false;
             return;
         }
         final String[] pair = pairs.get(i);
@@ -223,18 +291,25 @@ final class StereoRequests {
         } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
             Log.e(TAG, "pair warm-up failed: " + e);
             mStereoSequenceActive = false;
+            mPairsInFlight = false;
             mHost.restorePreview("pair sequence failed");
             return;
         }
 
         // Kept FROM this warm-up stream, by timestamp, not by a second request. The stream is
         // at 0.6 and carries both lenses' outputs of every frame; the pair is one of them.
-        armAfter(PAIR_WARM_MS, pair, outputDir, writer, mode);
+        armAfter(PAIR_WARM_MS, pair, outputDir, writer, mode, generation);
         mHost.handler().postDelayed(() -> {
             if (i + 1 < pairs.size()) {
-                runPair(pairs, i + 1, outputDir, writer, mode);
-            } else {
+                runPair(pairs, i + 1, outputDir, writer, mode, generation);
+                return;
+            }
+            synchronized (StereoRequests.this) {
+                if (generation != mGeneration) {
+                    return;
+                }
                 mStereoSequenceActive = false;
+                mPairsInFlight = false;
                 mHost.restorePreview("pair sequence ended");
                 Log.i(TAG, "lens pair sequence complete: " + pairs.size() + " pairs");
             }

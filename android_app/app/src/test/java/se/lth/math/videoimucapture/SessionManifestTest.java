@@ -235,6 +235,59 @@ public class SessionManifestTest {
     }
 
     /**
+     * A pair sequence ended on purpose is not a failure, and says what it is.
+     *
+     * M3 on 2026-09-21: stills first on the all-lens set, video joining four seconds in with
+     * the six-pair sequence a third done. The video now takes the repeating request and the
+     * remaining pairs are given up. Two pairs of six and three lenses of four, by decision.
+     */
+    @Test
+    public void aSequenceCutShortByAJoiningVideo_agreesAndSaysSo() throws Exception {
+        File dir = mFolder.newFolder("walk_cut_by_video");
+        touch(dir, "still_1_00.jpg", 16);
+        touch(dir, "stereo_111_uw.jpg", 16);
+        touch(dir, "stereo_111_main.jpg", 16);
+        touch(dir, "stereo_222_uw.jpg", 16);
+        touch(dir, "stereo_222_phys6.jpg", 16);
+        touch(dir, "video_recording.mp4", 4096);
+        SessionManifest m = manifest(dir, "WALK");
+        m.noteStillsRequested();
+        m.noteVideoRequested();
+        m.noteStillsFired(1);
+        m.noteStereoPairs(2);
+        m.noteStereoMetaRows(4);
+        m.noteLensSet("all", 4);
+        m.notePairSequenceCut(2, 6, "video joined");
+        m.write(null);
+
+        JSONObject root = read(dir);
+        assertEquals(3, root.getJSONObject("measured").getInt("lenses_seen"));
+        assertTrue("three lenses of four, by decision", root.getBoolean("agrees"));
+        assertEquals(6, root.getJSONObject("stereo_sequence_cut").getInt("pairs_planned"));
+        assertTrue(root.getString("summary"),
+                root.getString("summary").contains("pair sequence ended at 2 of 6 (video joined)"));
+    }
+
+    /** ...but what it DID arm is still held to account: an armed pair that never landed. */
+    @Test
+    public void aCutSequenceStillAnswersForThePairsItArmed() throws Exception {
+        File dir = mFolder.newFolder("walk_cut_and_short");
+        touch(dir, "still_1_00.jpg", 16);
+        touch(dir, "stereo_111_uw.jpg", 16);
+        touch(dir, "stereo_111_main.jpg", 16);
+        SessionManifest m = manifest(dir, "WALK");
+        m.noteStillsRequested();
+        m.noteStillsFired(1);
+        m.noteStereoPairs(2);            // two armed, one on the card
+        m.noteStereoMetaRows(2);
+        m.noteLensSet("all", 4);
+        m.notePairSequenceCut(2, 6, "video joined");
+        m.write(null);
+
+        assertFalse("an armed pair is missing", read(dir).getBoolean("agrees"));
+    }
+
+    /**
      * The all-lens shot as this phone can actually take it: six pairs in sequence.
      *
      * One request runs two sensors, so no burst ever holds four files -- the widest capture

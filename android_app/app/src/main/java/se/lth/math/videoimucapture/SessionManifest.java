@@ -69,6 +69,9 @@ public final class SessionManifest {
     private int mLensesConfigured = -1;
     private int mLensesExpected = -1;
     private int mCameraError = -1;
+    private int mPairSequenceArmed = -1;
+    private int mPairSequencePlanned = -1;
+    private String mPairSequenceCutReason = null;
     private long mCameraErrorAtMs = -1;
     private int mStereoMetaRows = -1;
 
@@ -209,6 +212,21 @@ public final class SessionManifest {
         mWorstThermalStatus = status;
     }
 
+    /**
+     * The run's pair sequence was ENDED ON PURPOSE before it finished, and why.
+     *
+     * A video that joins a stills run takes the repeating request, so the pairs still to come
+     * are given up for it. Without this the receipt would see an all-lens session that
+     * delivered three lenses of four and call it a failure; with it, the missing lenses are a
+     * decision the file can state. What WAS armed is still held to account: a pair that was
+     * armed and did not land disagrees exactly as before.
+     */
+    public void notePairSequenceCut(int armed, int planned, String reason) {
+        mPairSequenceArmed = armed;
+        mPairSequencePlanned = planned;
+        mPairSequenceCutReason = reason;
+    }
+
     /** ...and for charge, with the level at each end so the drain is readable afterwards. */
     public void noteStoppedForBattery() {
         mStoppedForBattery = true;
@@ -328,6 +346,15 @@ public final class SessionManifest {
                 cam.put("at_s", Double.parseDouble(String.format(Locale.US, "%.1f",
                         (mCameraErrorAtMs - mStartedWallMs) / 1000.0)));
                 root.put("camera_error", cam);
+            }
+
+            // Only when it happened, for the same reason.
+            if (mPairSequenceCutReason != null) {
+                JSONObject cutShort = new JSONObject();
+                cutShort.put("reason", mPairSequenceCutReason);
+                cutShort.put("pairs_armed", mPairSequenceArmed);
+                cutShort.put("pairs_planned", mPairSequencePlanned);
+                root.put("stereo_sequence_cut", cutShort);
             }
 
             root.put("agrees", agrees(measured));
@@ -473,7 +500,10 @@ public final class SessionManifest {
         }
         // Across the session, not within one burst: on this phone a request can run two
         // sensors, so every lens delivering means every lens appearing in SOME pair.
-        if (mLensesExpected > 0 && measured.optInt("stereo_bursts_seen", 0) > 0
+        // Unless the sequence was ended on purpose: then the lenses it never reached were not
+        // asked for, and the pairs it did arm are judged by the count below.
+        if (mPairSequenceCutReason == null
+                && mLensesExpected > 0 && measured.optInt("stereo_bursts_seen", 0) > 0
                 && measured.optInt("lenses_seen", 0) < mLensesExpected) {
             return false;
         }
@@ -520,7 +550,11 @@ public final class SessionManifest {
             sb.append(" — ").append(missing).append(" OF ").append(mStillsFired)
                     .append(" STILLS NEVER REACHED THE CARD");
         }
-        if (mLensesExpected > 0 && measured.optInt("stereo_bursts_seen", 0) > 0) {
+        if (mPairSequenceCutReason != null) {
+            sb.append(" — pair sequence ended at ").append(mPairSequenceArmed).append(" of ")
+                    .append(mPairSequencePlanned).append(" (").append(mPairSequenceCutReason)
+                    .append(")");
+        } else if (mLensesExpected > 0 && measured.optInt("stereo_bursts_seen", 0) > 0) {
             int got = measured.optInt("lenses_seen", 0);
             if (got < mLensesExpected) {
                 sb.append(" — ").append(mLensesExpected).append(" lenses expected, ")
