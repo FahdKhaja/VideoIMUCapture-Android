@@ -2,7 +2,6 @@ package se.lth.math.videoimucapture;
 
 import android.app.Activity;
 import android.content.Context;
-import android.content.SharedPreferences;
 import android.graphics.Rect;
 import android.graphics.SurfaceTexture;
 import android.hardware.camera2.CameraAccessException;
@@ -15,15 +14,12 @@ import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.MeteringRectangle;
-import android.hardware.camera2.params.OisSample;
 import android.hardware.camera2.params.OutputConfiguration;
 import android.hardware.camera2.params.SessionConfiguration;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.os.Build;
-import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.os.SystemClock;
 import androidx.annotation.NonNull;
 
 import androidx.preference.PreferenceManager;
@@ -34,12 +30,9 @@ import android.view.Surface;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
 
-import static java.lang.Math.abs;
 
 public class Camera2Proxy {
 
@@ -133,255 +126,130 @@ public class Camera2Proxy {
         return mStillCaptureManager;
     }
 
-    // ---------------------------------------------------------------- focus stack
+    // ---------------------------------------------------------------- borrowed requests
     //
-    // A focus bracket cannot be a burst. The first build proved it: five requests spanning
-    // 0.658 dioptres came back as five frames all reporting 0.100 D, landing 33.3 ms apart
-    // — one sensor period — with a global sharpness spread of 1.0048x. captureBurst exists
-    // to minimise the gap between frames, which is exactly the wrong property when the
-    // parameter being bracketed has to physically move.
-    //
-    // So each step is now: park the lens with a REPEATING request, wait until the lens
-    // reports it has arrived, then open the shutter. The wait is bounded, and how long it
-    // took is recorded per shot, so a lens that never arrives is visible in the data.
+    // Three things take the repeating request away from the preview for a while: a focus
+    // stack, a pair warm-up, and periodic pairs. Each lives in its own class and reaches the
+    // session through mHost; all of them come back through restorePreview().
 
-    /** Dioptre tolerance for "the lens got there". Well under one depth-of-field step. */
-    private static final float FOCUS_TOLERANCE_D = 0.02f;
-    /** Give up on a step after this long and shoot anyway, flagged as unsettled. */
-    private static final long FOCUS_SETTLE_TIMEOUT_MS = 400L;
-    /** Breathing room after the shutter before the lens is driven somewhere else. */
-    private static final long FOCUS_SHOT_SPACING_MS = 120L;
+    private final RepeatingRequestHost mHost = new RepeatingRequestHost() {
+        @Override
+        public CameraDevice device() {
+            return mCameraDevice;
+        }
 
-    // THREADING. Every one of these is written by runFocusStep and read by onFocusResult,
-    // which runs on the camera callback thread. The whole sequence is therefore posted to
-    // mBackgroundHandler — the same thread the session callbacks are delivered on — so the
-    // steps and the results they are waiting for are serialised by construction rather than
-    // by hoping. volatile covers the initial hand-off from whichever thread pressed the
-    // button.
-    private volatile float mFocusTarget = Float.NaN;
-    private volatile long mFocusStepStartNs;
-    private volatile Runnable mFocusTimeout;
-    private final AtomicBoolean mFocusStepPending = new AtomicBoolean(false);
-    private final AtomicBoolean mFocusStackRunning = new AtomicBoolean(false);
+        @Override
+        public CameraCaptureSession session() {
+            return mCaptureSession;
+        }
+
+        @Override
+        public CaptureRequest.Builder previewBuilder() {
+            return mPreviewRequestBuilder;
+        }
+
+        @Override
+        public void replacePreviewBuilder(CaptureRequest.Builder b) {
+            mPreviewRequestBuilder = b;
+        }
+
+        @Override
+        public Surface previewSurface() {
+            return mPreviewSurface;
+        }
+
+        @Override
+        public Handler handler() {
+            return mBackgroundHandler;
+        }
+
+        @Override
+        public StillCaptureManager stills() {
+            return mStillCaptureManager;
+        }
+
+        @Override
+        public void reissuePreview() throws CameraAccessException {
+            Camera2Proxy.this.reissuePreview();
+        }
+
+        @Override
+        public void setRepeating(CaptureRequest request) throws CameraAccessException {
+            if (mCaptureSession == null) {
+                throw new IllegalStateException("no capture session");
+            }
+            mCaptureSession.setRepeatingRequest(
+                    request, mSessionCaptureCallback, mBackgroundHandler);
+        }
+
+        @Override
+        public void restorePreview(String why) {
+            Camera2Proxy.this.restorePreview(why);
+        }
+    };
+
+    private final FocusStackSequencer mFocusStack = new FocusStackSequencer(mHost);
+    private final StereoRequests mStereoRequests = new StereoRequests(mHost);
+
+    /** The preview builder, as it now stands, becomes the repeating request. */
+    private void reissuePreview() throws CameraAccessException {
+        if (mCaptureSession == null || mPreviewRequestBuilder == null) {
+            throw new IllegalStateException("no capture session");
+        }
+        mCaptureSession.setRepeatingRequest(
+                mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+    }
 
     /**
-     * Drive a focus stack one settled step at a time.
+     * THE way back to the preview, for everything that borrowed the repeating request.
+     *
+     * There were three: the single pair's inline lambda, the pair sequence's own method, and
+     * the focus stack's. Only one of them closed a pair arm that had not completed, so an arm
+     * left open by the single-pair path would have claimed the first frames of the NEXT
+     * physical stream to start -- a periodic run's, say -- as its own. Putting the preview
+     * back ends whatever stream an open arm was waiting on, so whoever does the one does the
+     * other.
+     */
+    private void restorePreview(String why) {
+        if (mStillCaptureManager != null) {
+            // An arm that never got both frames is logged here rather than left to the next
+            // arm to notice; its rows, if any, still resolve through the pending list.
+            mStillCaptureManager.stereo().finishStreamKeep();
+        }
+        if (mCaptureSession == null || mPreviewRequestBuilder == null) {
+            return;
+        }
+        try {
+            reissuePreview();
+            Log.d(TAG, why + ", preview restored");
+        } catch (CameraAccessException | IllegalStateException e) {
+            Log.w(TAG, "could not restore preview (" + why + "): " + e);
+        }
+    }
+
+    /**
+     * Drive a focus stack one settled step at a time. See {@link FocusStackSequencer}.
      *
      * @param shots number of slices; the plan is centred on the current autofocus result
      *              and stepped by the depth of field, so this is "how thick a subject".
      */
     public void captureFocusStack(int shots, boolean writeRaw, File outputDir,
                                   RecordingWriter writer) {
-        if (mStillCaptureManager == null || mCaptureSession == null
-                || mPreviewRequestBuilder == null || mCameraDevice == null) {
-            Log.w(TAG, "focus stack requested before the session exists");
-            return;
-        }
-        if (!mFocusStackRunning.compareAndSet(false, true)) {
-            Log.w(TAG, "focus stack already running; ignoring");
-            return;
-        }
-        final float[] plan = mStillCaptureManager.planFocusStack(mLastResult, shots);
-        mStillCaptureManager.beginFocusStack(plan.length, writeRaw, outputDir, writer);
-        // Remember what the preview was doing so autofocus can be handed back afterwards.
-        // If the preview never named a mode, hand back CONTINUOUS_PICTURE rather than the
-        // OFF this sequence is about to set — otherwise a finished stack leaves the camera
-        // stuck at the last slice's focus with no way back but a restart.
-        final Integer afMode = mPreviewRequestBuilder.get(CaptureRequest.CONTROL_AF_MODE);
-        final int restoreMode = afMode != null
-                ? afMode : CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE;
-        final Float afDist = mPreviewRequestBuilder.get(CaptureRequest.LENS_FOCUS_DISTANCE);
-        mBackgroundHandler.post(() -> runFocusStep(plan, 0, restoreMode, afDist));
+        mFocusStack.start(shots, writeRaw, outputDir, writer, mLastResult);
     }
 
-    private void runFocusStep(float[] plan, int index, int restoreAfMode,
-                              Float restoreAfDist) {
-        if (index >= plan.length) {
-            restoreAfterFocusStack(restoreAfMode, restoreAfDist);
-            mFocusStackRunning.set(false);
-            Log.i(TAG, "focus stack complete: " + plan.length + " slices");
-            return;
-        }
-        final float target = plan[index];
-        mFocusTarget = target;
-        mFocusStepStartNs = SystemClock.elapsedRealtimeNanos();
-        mFocusStepPending.set(true);
+    // ---------------------------------------------------------------- the physical lenses
+    // Requests: StereoRequests. Frames and rows: StereoCapture. Roles: LensRoles.
 
-        final Runnable timeout = () -> fireFocusShot(plan, index, target, false,
-                restoreAfMode, restoreAfDist);
-        mFocusTimeout = timeout;
-        mFocusSettleSignal = () -> fireFocusShot(plan, index, target, true,
-                restoreAfMode, restoreAfDist);
-
-        try {
-            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE,
-                    CameraMetadata.CONTROL_AF_MODE_OFF);
-            mPreviewRequestBuilder.set(CaptureRequest.LENS_FOCUS_DISTANCE, target);
-            mCaptureSession.setRepeatingRequest(mPreviewRequestBuilder.build(),
-                    mSessionCaptureCallback, mBackgroundHandler);
-        } catch (CameraAccessException | IllegalStateException e) {
-            Log.e(TAG, "could not drive focus to " + target + ": " + e);
-        }
-        mBackgroundHandler.postDelayed(timeout, FOCUS_SETTLE_TIMEOUT_MS);
-    }
-
-    /**
-     * Take the shot for one step. Reached from either the settle callback or the timeout;
-     * the AtomicBoolean guarantees exactly one of them wins, and `settled` is passed in by
-     * whichever did rather than inferred from the elapsed time.
-     */
-    private void fireFocusShot(float[] plan, int index, float target, boolean settled,
-                               int restoreAfMode, Float restoreAfDist) {
-        if (!mFocusStepPending.compareAndSet(true, false)) {
-            return;
-        }
-        Runnable t = mFocusTimeout;
-        if (t != null) {
-            mBackgroundHandler.removeCallbacks(t);
-        }
-        final long waited = SystemClock.elapsedRealtimeNanos() - mFocusStepStartNs;
-        mStillCaptureManager.captureFocusShot(mCameraDevice, mCaptureSession,
-                mPreviewRequestBuilder, index, target, waited, settled);
-        mBackgroundHandler.postDelayed(
-                () -> runFocusStep(plan, index + 1, restoreAfMode, restoreAfDist),
-                FOCUS_SHOT_SPACING_MS);
-    }
-
-    /**
-     * Called for every preview result while a focus step is outstanding. Accepts only
-     * results whose OWN request carried the target distance — the pipeline is several
-     * frames deep, so results for the previous lens position keep arriving after the new
-     * request goes out, and grading those is precisely how the burst version fooled itself
-     * into reporting five focus positions it never reached.
-     */
-    private void onFocusResult(CaptureRequest request, CaptureResult result) {
-        if (!mFocusStepPending.get()) {
-            return;
-        }
-        Float requested = request.get(CaptureRequest.LENS_FOCUS_DISTANCE);
-        if (requested == null || Math.abs(requested - mFocusTarget) > 1e-4f) {
-            return;   // a result from before this step's request took effect
-        }
-        Integer state = result.get(CaptureResult.LENS_STATE);
-        if (state != null && state != CameraMetadata.LENS_STATE_STATIONARY) {
-            return;   // still moving
-        }
-        Float actual = result.get(CaptureResult.LENS_FOCUS_DISTANCE);
-        if (actual != null && Math.abs(actual - mFocusTarget) > FOCUS_TOLERANCE_D) {
-            return;   // parked, but not where we asked
-        }
-        mFocusSettleSignal.run();
-    }
-
-    /**
-     * Set by runFocusStep, invoked by onFocusResult. Held as a field rather than passed so
-     * the result callback needs no knowledge of which step it is completing.
-     */
-    private volatile Runnable mFocusSettleSignal = () -> {
-    };
-
-    private void restoreAfterFocusStack(int afMode, Float afDist) {
-        try {
-            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, afMode);
-            if (afDist != null) {
-                mPreviewRequestBuilder.set(CaptureRequest.LENS_FOCUS_DISTANCE, afDist);
-            }
-            mCaptureSession.setRepeatingRequest(mPreviewRequestBuilder.build(),
-                    mSessionCaptureCallback, mBackgroundHandler);
-        } catch (CameraAccessException | IllegalStateException e) {
-            Log.w(TAG, "could not restore focus mode: " + e);
-        }
-    }
-
-    /**
-     * One simultaneous frame from each of the ultrawide and main lenses.
-     *
-     * WARM-UP IS REQUIRED, and finding that out cost a capture. A logical multi-camera
-     * does not keep every physical sensor running — only the ones feeding current
-     * output. Firing a one-shot request at an idle physical stream returns
-     * ERROR_CAMERA_BUFFER (errorCode 5) for it: measured here as errorStreamId=3, and
-     * the pair came back with the main frame present and the ultrawide missing.
-     *
-     * So the physical streams are added to the REPEATING request first, which starts
-     * the second sensor and lets its exposure settle, and only then is the pair
-     * captured. The normal preview request is restored afterwards so two sensors are
-     * not left running — that is real power and heat for a capability used once per
-     * composite.
-     */
+    /** One simultaneous pair, or every configured pair in sequence. See StereoRequests. */
     public void captureStereoPair(File outputDir, RecordingWriter writer,
                                   StillCaptureManager.CaptureMode mode) {
-        if (mStillCaptureManager == null || !mStillCaptureManager.stereo().stereoSupported()
-                || mCaptureSession == null || mPreviewRequestBuilder == null) {
-            return;
-        }
-        if (mPeriodicStereo) {
-            // The physical streams are already in the repeating request and pairs are being
-            // kept on the interval; a warm-up here would swap the recording's request for a
-            // TEMPLATE_PREVIEW copy of it. The next periodic pair is at most one interval away.
-            Log.i(TAG, "stereo pair requested while periodic pairs run; leaving it to the interval");
-            return;
-        }
-        // More than the metric pair configured: pairs in sequence, never all at once. A
-        // warm-up that targets four physical streams is what killed the device on
-        // 2026-09-20 -- the HAL will run two sensors per request on this phone -- and the
-        // streaming probe showed every pair streams from a session bound with all four.
-        if (mStillCaptureManager.stereo().getStereoSurfaces().size() > 2) {
-            captureLensPairSequence(outputDir, writer, mode);
-            return;
-        }
-        try {
-            CaptureRequest.Builder warm =
-                    mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-            // Copy the preview's settings so the pair is exposed like everything else in
-            // the composite, then add the preview surface plus both physical streams.
-            for (CaptureRequest.Key key : new CaptureRequest.Key[]{
-                    CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_AE_MODE,
-                    CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AF_MODE,
-                    CaptureRequest.CONTROL_AE_LOCK, CaptureRequest.CONTROL_AWB_LOCK,
-                    CaptureRequest.SENSOR_EXPOSURE_TIME, CaptureRequest.SENSOR_SENSITIVITY,
-                    CaptureRequest.FLASH_MODE, CaptureRequest.LENS_FOCUS_DISTANCE}) {
-                Object v = mPreviewRequestBuilder.get(key);
-                if (v != null) {
-                    warm.set(key, v);
-                }
-            }
-            // Widest zoom in the warm-up, for the same reason as the pair sequence: the
-            // ultrawide's stream is only the ultrawide's view once the HAL is at 0.6.
-            mStillCaptureManager.stereo().applyFullFieldOfView(warm);
-            warm.addTarget(mPreviewSurface);
-            for (Surface s : mStillCaptureManager.stereo().getStereoSurfaces().values()) {
-                warm.addTarget(s);
-            }
-            mCaptureSession.setRepeatingRequest(
-                    warm.build(), mSessionCaptureCallback, mBackgroundHandler);
-            Log.d(TAG, "stereo warm-up streaming");
-
-            // Kept FROM the warm-up stream, not by a second request: see armPairFromStream.
-            mBackgroundHandler.postDelayed(() -> mStillCaptureManager.stereo().armPairFromStream(
-                    new String[]{LensRoles.physUltrawide(),
-                            LensRoles.physMain()},
-                    outputDir, writer, mode), 900L);
-            mBackgroundHandler.postDelayed(() -> {
-                try {
-                    mCaptureSession.setRepeatingRequest(mPreviewRequestBuilder.build(),
-                            mSessionCaptureCallback, mBackgroundHandler);
-                    Log.d(TAG, "stereo warm-up ended, preview restored");
-                } catch (CameraAccessException | IllegalStateException e) {
-                    Log.w(TAG, "could not restore preview: " + e);
-                }
-            }, 2200L);
-        } catch (CameraAccessException | IllegalStateException e) {
-            Log.e(TAG, "stereo warm-up failed: " + e);
-        }
+        mStereoRequests.capturePair(outputDir, writer, mode);
     }
-
-    // ------------------------------------------------------------ pairs, in sequence
-
-    private volatile boolean mStereoSequenceActive = false;
 
     /** Whether a pair sequence is between its first warm-up and its final preview restore. */
     public boolean isStereoSequenceActive() {
-        return mStereoSequenceActive;
+        return mStereoRequests.sequenceActive();
     }
 
     public int oneShotStereoBursts() {
@@ -392,237 +260,27 @@ public class Camera2Proxy {
         return mStillCaptureManager == null ? 0 : mStillCaptureManager.stereo().stereoMetaRows();
     }
 
-    /** Warm-up per pair: the probe's first frame from a cold pair came at ~500 ms. */
-    private static final long PAIR_WARM_MS = 700L;
-    /** After the capture request, before the next pair's warm-up replaces the stream. */
-    private static final long PAIR_SETTLE_MS = 450L;
-
-    /**
-     * Every configured pair, one after another, each from its own warm repeating request.
-     *
-     * The single-pair path above warms both physical streams for 900 ms and fires once.
-     * This does the same thing per pair -- warm request carrying the preview plus exactly
-     * two physical surfaces, then a pair capture, then the next -- because two is what one
-     * request may run on this phone. Six pairs take about seven seconds; a static target
-     * does not mind, and every pair is simultaneous within itself, which is all a disparity
-     * needs. The ordinary preview is restored once, at the end.
-     *
-     * The stillness trigger is held off for the duration (see CaptureModeManager.captureNow):
-     * a JPEG burst replaces the repeating request, which would end the pair's warm-up under
-     * it and return ERROR_CAMERA_BUFFER for the cold lens.
-     */
-    private void captureLensPairSequence(File outputDir, RecordingWriter writer,
-                                         StillCaptureManager.CaptureMode mode) {
-        final java.util.List<String[]> pairs = mStillCaptureManager.stereo().configuredLensPairs();
-        if (pairs.isEmpty()) {
-            Log.w(TAG, "no lens pairs to capture");
-            return;
-        }
-        mStereoSequenceActive = true;
-        Log.i(TAG, "lens pair sequence: " + pairs.size() + " pairs");
-        runPair(pairs, 0, outputDir, writer, mode);
-    }
-
-    private void runPair(final java.util.List<String[]> pairs, final int i,
-                         final File outputDir, final RecordingWriter writer,
-                         final StillCaptureManager.CaptureMode mode) {
-        if (mCameraDevice == null || mCaptureSession == null || mStillCaptureManager == null
-                || mPreviewRequestBuilder == null) {
-            Log.w(TAG, "pair sequence abandoned at " + i + ": session gone");
-            mStereoSequenceActive = false;
-            return;
-        }
-        final String[] pair = pairs.get(i);
-        try {
-            CaptureRequest.Builder warm =
-                    mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-            for (CaptureRequest.Key key : new CaptureRequest.Key[]{
-                    CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_AE_MODE,
-                    CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AF_MODE,
-                    CaptureRequest.CONTROL_AE_LOCK, CaptureRequest.CONTROL_AWB_LOCK,
-                    CaptureRequest.SENSOR_EXPOSURE_TIME, CaptureRequest.SENSOR_SENSITIVITY,
-                    CaptureRequest.FLASH_MODE, CaptureRequest.LENS_FOCUS_DISTANCE}) {
-                Object v = mPreviewRequestBuilder.get(key);
-                if (v != null) {
-                    warm.set(key, v);
-                }
-            }
-            // Widest zoom IN THE WARM-UP, so the HAL has already switched master lens by the
-            // time the pair fires. This is what makes the ultrawide half a wide-angle frame
-            // rather than a crop of the main camera's view (see applyFullFieldOfView).
-            mStillCaptureManager.stereo().applyFullFieldOfView(warm);
-            warm.addTarget(mPreviewSurface);
-            for (String pid : pair) {
-                Surface s = mStillCaptureManager.stereo().lensSurface(pid);
-                if (s != null) {
-                    warm.addTarget(s);
-                }
-            }
-            mCaptureSession.setRepeatingRequest(
-                    warm.build(), mSessionCaptureCallback, mBackgroundHandler);
-            Log.d(TAG, "pair " + (i + 1) + "/" + pairs.size() + " warming: "
-                    + pair[0] + "+" + pair[1]);
-        } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
-            Log.e(TAG, "pair warm-up failed: " + e);
-            mStereoSequenceActive = false;
-            restorePreviewAfterPairs();
-            return;
-        }
-
-        // Kept FROM this warm-up stream, by timestamp, not by a second request. The stream is
-        // at 0.6 and carries both lenses' outputs of every frame; the pair is one of them.
-        mBackgroundHandler.postDelayed(() -> mStillCaptureManager.stereo().armPairFromStream(
-                pair, outputDir, writer, mode), PAIR_WARM_MS);
-        mBackgroundHandler.postDelayed(() -> {
-            if (i + 1 < pairs.size()) {
-                runPair(pairs, i + 1, outputDir, writer, mode);
-            } else {
-                mStereoSequenceActive = false;
-                restorePreviewAfterPairs();
-                Log.i(TAG, "lens pair sequence complete: " + pairs.size() + " pairs");
-            }
-        }, PAIR_WARM_MS + PAIR_SETTLE_MS);
-    }
-
-    private void restorePreviewAfterPairs() {
-        if (mStillCaptureManager != null) {
-            // An arm that never got both frames is logged here rather than left to the next
-            // arm to notice; its rows, if any, still resolve through the pending list.
-            mStillCaptureManager.stereo().finishStreamKeep();
-        }
-        if (mCaptureSession == null || mPreviewRequestBuilder == null) {
-            return;
-        }
-        try {
-            mCaptureSession.setRepeatingRequest(mPreviewRequestBuilder.build(),
-                    mSessionCaptureCallback, mBackgroundHandler);
-            Log.d(TAG, "pair sequence ended, preview restored");
-        } catch (CameraAccessException | IllegalStateException e) {
-            Log.w(TAG, "could not restore preview after pairs: " + e);
-        }
-    }
-
-    // ------------------------------------------------- periodic stereo pairs (ReconStab #36)
-    //
-    // The mechanism is in StillCaptureManager (see "periodic pairs inside a video" there). This
-    // end owns the REQUEST: while pairs are on, the repeating request carries both physical
-    // streams as targets, so both sensors run and every frame reaches the two readers.
-    //
-    // Per-physical keys need a builder created FOR those physical ids -- setPhysicalCameraKey
-    // on a plain builder throws "Physical camera id: 2 is not valid!", which is how the first
-    // OBJECT pair was lost. The recording's builder is plain, on purpose: a physical-aware
-    // builder for every recording would change the control clips this app is compared
-    // against. So the swap is made here, only while pairs are on: a new builder from the same
-    // template with the ids, every key of the current request copied across, the three targets
-    // added, and the field replaced. Every other path that re-issues mPreviewRequestBuilder
-    // (lock, torch, EV, manual exposure, AE range, focus stack) then carries the streams along
-    // without knowing. Stop does the reverse.
-
-    private boolean mPeriodicStereo = false;
-
     public boolean stereoSupported() {
-        return mStillCaptureManager != null && mStillCaptureManager.stereo().stereoSupported();
+        return mStereoRequests.supported();
     }
 
     public boolean periodicStereoActive() {
-        return mPeriodicStereo;
+        return mStereoRequests.periodicActive();
     }
 
     public int periodicStereoPairs() {
         return mStillCaptureManager != null ? mStillCaptureManager.stereo().periodicPairCount() : 0;
     }
 
-    /**
-     * Put both physical streams into the repeating request and start keeping a pair every
-     * intervalMs. Safe to call when unsupported: it logs and does nothing.
-     */
+    /** Both physical streams into the repeating request, a pair kept every intervalMs. */
     public void startPeriodicStereo(long intervalMs, File outputDir, RecordingWriter writer,
                                     StillCaptureManager.CaptureMode mode) {
-        if (Build.VERSION.SDK_INT < 28 || !stereoSupported() || mCaptureSession == null
-                || mPreviewRequestBuilder == null || mCameraDevice == null) {
-            Log.w(TAG, "periodic stereo unavailable (session or lens pair missing)");
-            return;
-        }
-        if (mPeriodicStereo) {
-            return;
-        }
-        try {
-            CaptureRequest.Builder b = mCameraDevice.createCaptureRequest(
-                    CameraDevice.TEMPLATE_RECORD, LensRoles.stereoPhysicalIds());
-            copyAllKeys(mPreviewRequestBuilder.build(), b);
-            b.addTarget(mPreviewSurface);
-            // The METRIC pair, not every lens the session happens to have configured. The
-            // periodic stream exists to put a known 18.02 mm ruler in the clip; adding a
-            // telephoto whose offset the device will not publish would put two more streams
-            // in the recording's own repeating request for the whole walk and contribute no
-            // scale for the cost.
-            for (Surface s : mStillCaptureManager.stereo().getMetricPairSurfaces().values()) {
-                b.addTarget(s);
-            }
-            mStillCaptureManager.stereo().applyPhysicalFullArrays(b, LensRoles.stereoPhysicalIds());
-            // NO widest-zoom here, deliberately. This request also drives the VIDEO for the
-            // whole clip, and at 0.6 the logical camera switches master to the ultrawide --
-            // every walk would be shot on the wide lens. So periodic pairs inside a video keep
-            // the ultrawide half cropped toward the main camera's view (a session-dependent
-            // 1.4-1.6x; see applyFullFieldOfView), and their depth needs the effective focal
-            // measured, not the census value. Changing the clip's lens is an operator
-            // decision, not a side effect of asking for a metric anchor.
-            mPreviewRequestBuilder = b;
-            mCaptureSession.setRepeatingRequest(
-                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
-            mStillCaptureManager.stereo().startPeriodicStereo(intervalMs * 1_000_000L, outputDir,
-                    writer, mode);
-            mPeriodicStereo = true;
-            Log.i(TAG, "periodic stereo: physical streams added to the repeating request, "
-                    + intervalMs + " ms interval");
-        } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
-            Log.e(TAG, "periodic stereo could not start: " + e);
-        }
+        mStereoRequests.startPeriodic(intervalMs, outputDir, writer, mode);
     }
 
     /** Take the physical streams back out of the repeating request. */
     public void stopPeriodicStereo() {
-        if (!mPeriodicStereo) {
-            return;
-        }
-        mPeriodicStereo = false;
-        if (mStillCaptureManager != null) {
-            mStillCaptureManager.stereo().stopPeriodicStereo();
-        }
-        if (mCaptureSession == null || mPreviewRequestBuilder == null || mCameraDevice == null) {
-            return;
-        }
-        try {
-            CaptureRequest.Builder b =
-                    mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
-            copyAllKeys(mPreviewRequestBuilder.build(), b);
-            b.addTarget(mPreviewSurface);
-            mPreviewRequestBuilder = b;
-            mCaptureSession.setRepeatingRequest(
-                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
-            Log.i(TAG, "periodic stereo: physical streams removed, preview request restored");
-        } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
-            Log.w(TAG, "periodic stereo: could not restore the plain request: " + e);
-        }
-    }
-
-    /** Every key the built request carries, onto another builder. Targets are not keys. */
-    private static void copyAllKeys(CaptureRequest from, CaptureRequest.Builder to) {
-        for (CaptureRequest.Key<?> key : from.getKeys()) {
-            copyKey(from, to, key);
-        }
-    }
-
-    private static <T> void copyKey(CaptureRequest from, CaptureRequest.Builder to,
-                                    CaptureRequest.Key<T> key) {
-        T v = from.get(key);
-        if (v != null) {
-            try {
-                to.set(key, v);
-            } catch (IllegalArgumentException e) {
-                Log.w(TAG, "key " + key.getName() + " not copied: " + e);
-            }
-        }
+        mStereoRequests.stopPeriodic();
     }
 
     public void startRecordingCaptureResult(RecordingWriter recordingWriter) {
@@ -690,8 +348,7 @@ public class Camera2Proxy {
         try {
             mPreviewRequestBuilder.set(CaptureRequest.FLASH_MODE,
                     on ? CameraMetadata.FLASH_MODE_TORCH : CameraMetadata.FLASH_MODE_OFF);
-            mCaptureSession.setRepeatingRequest(
-                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+            reissuePreview();
             Log.d(TAG, "torch " + (on ? "on" : "off"));
         } catch (CameraAccessException | IllegalStateException e) {
             Log.w(TAG, "could not set torch: " + e);
@@ -732,8 +389,7 @@ public class Camera2Proxy {
         }
         try {
             mCameraSettingsManager.updateRequestBuilder(mPreviewRequestBuilder);
-            mCaptureSession.setRepeatingRequest(
-                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+            reissuePreview();
         } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
             Log.w(TAG, "Could not re-apply camera settings: " + e);
         }
@@ -781,8 +437,7 @@ public class Camera2Proxy {
         }
         try {
             mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, units);
-            mCaptureSession.setRepeatingRequest(
-                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+            reissuePreview();
             mExposureCompensation = units;
         } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
             Log.w(TAG, "Could not set exposure compensation: " + e);
@@ -858,8 +513,7 @@ public class Camera2Proxy {
             mPreviewRequestBuilder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs);
             mPreviewRequestBuilder.set(CaptureRequest.SENSOR_SENSITIVITY, iso);
             mPreviewRequestBuilder.set(CaptureRequest.SENSOR_FRAME_DURATION, frameDurationNs);
-            mCaptureSession.setRepeatingRequest(
-                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+            reissuePreview();
             mManualExposureHeld = true;
         } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
             Log.w(TAG, "Could not set manual exposure: " + e);
@@ -875,8 +529,7 @@ public class Camera2Proxy {
             mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE,
                     CameraMetadata.CONTROL_AE_MODE_ON);
             mPreviewRequestBuilder.set(CaptureRequest.SENSOR_FRAME_DURATION, null);
-            mCaptureSession.setRepeatingRequest(
-                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+            reissuePreview();
         } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
             Log.w(TAG, "Could not release manual exposure: " + e);
         }
@@ -901,8 +554,7 @@ public class Camera2Proxy {
         }
         try {
             mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, range);
-            mCaptureSession.setRepeatingRequest(
-                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+            reissuePreview();
         } catch (CameraAccessException | IllegalStateException e) {
             Log.w(TAG, "Could not set AE target FPS range: " + e);
         }
@@ -1023,8 +675,7 @@ public class Camera2Proxy {
         try {
             mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_LOCK, lock);
             mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AWB_LOCK, lock);
-            mCaptureSession.setRepeatingRequest(
-                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+            reissuePreview();
             Log.d(TAG, "AE/AWB lock " + (lock ? "engaged" : "released"));
         } catch (CameraAccessException | IllegalStateException e) {
             Log.w(TAG, "Could not change AE/AWB lock: " + e);
@@ -1050,15 +701,12 @@ public class Camera2Proxy {
             sensorArraySize = mCameraCharacteristics.get(
                     CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
 
-
             mFocalLengthHelper.setLensParams(mCameraCharacteristics);
             mFocalLengthHelper.setImageSize(videoSize);
-
 
             // Find out if we need to swap dimension to get the preview size relative to sensor coordinate.
             mSensorOrientation = mCameraCharacteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
             mSwappedDimensions = (mSensorOrientation == 90 || mSensorOrientation == 270);
-
 
             StreamConfigurationMap map = mCameraCharacteristics.get(CameraCharacteristics
                     .SCALER_STREAM_CONFIGURATION_MAP);
@@ -1091,10 +739,8 @@ public class Camera2Proxy {
     public void releaseCamera() {
         Log.v(TAG, "releaseCamera");
         // The session is going away with it; no request to restore, just the bookkeeping.
-        mPeriodicStereo = false;
-        if (mStillCaptureManager != null) {
-            mStillCaptureManager.stereo().stopPeriodicStereo();
-        }
+        mStereoRequests.sessionGone();
+        mFocusStack.sessionGone();
         stopRecordingCaptureResult();
         if (null != mCaptureSession) {
             mCaptureSession.close();
@@ -1141,10 +787,8 @@ public class Camera2Proxy {
             return;
         }
         Log.i(TAG, "rebuilding the capture session to pick up a session-level setting");
-        mPeriodicStereo = false;
-        if (mStillCaptureManager != null) {
-            mStillCaptureManager.stereo().stopPeriodicStereo();
-        }
+        mStereoRequests.sessionGone();
+        mFocusStack.sessionGone();
         if (mCaptureSession != null) {
             try {
                 mCaptureSession.close();
@@ -1328,7 +972,7 @@ public class Camera2Proxy {
 
                     // A focus stack step may be waiting on the lens to arrive. Checked
                     // before anything else touches AF state, and cheap when idle.
-                    onFocusResult(request, result);
+                    mFocusStack.onResult(request, result);
 
                     if (mCameraSettingsManager.focusOnTouch()) {
                         mFocusTriggered |= (result.get(CaptureResult.CONTROL_AF_STATE) == CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN);
@@ -1372,8 +1016,7 @@ public class Camera2Proxy {
                             //Lock AE
                             mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_LOCK, true);
                             try {
-                                mCaptureSession.setRepeatingRequest(
-                                        mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+                                reissuePreview();
                             } catch (CameraAccessException e) {
                                 e.printStackTrace();
                             }
@@ -1397,7 +1040,8 @@ public class Camera2Proxy {
                         // est_focal_length_pix keeps the DERIVED estimate: the field is named
                         // "est" and the HAL's own value has its own field
                         // (lens_intrinsic_calibration), so both provenances survive in the file.
-                        writeCaptureData(result, focal_length_pix);
+                        mRecordingWriter.queueData(
+                                FrameRecords.frame(result, focal_length_pix, mFocalLengthHelper));
                     }
                     // The readout shows the number the app actually computes smear from -- the
                     // HAL's per-frame fx where it exists. Showing the derived estimate instead
@@ -1412,7 +1056,6 @@ public class Camera2Proxy {
 //                    Log.d(TAG, "mSessionCaptureCallback,  onCaptureProgressed");
                 }
             };
-
 
     void changeManualFocusPoint(float eventX, float eventY, int viewWidth, int viewHeight) {
         if (!mCameraSettingsManager.focusOnTouch() && !mCameraSettingsManager.exposureOnTouch()) {
@@ -1447,9 +1090,7 @@ public class Camera2Proxy {
         }
         // Update running requests with metering regions
         try {
-            mCaptureSession.setRepeatingRequest(
-                    mPreviewRequestBuilder.build(),
-                    mSessionCaptureCallback, mBackgroundHandler);
+            reissuePreview();
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
@@ -1474,281 +1115,8 @@ public class Camera2Proxy {
     }
 
     public void writeCameraInfo() {
-
-        RecordingProtos.CameraInfo.Builder metaBuilder = RecordingProtos.CameraInfo.newBuilder()
-                .setOpticalImageStabilization(mCameraSettingsManager.OISEnabled())
-                .setVideoStabilization(mCameraSettingsManager.DVSEnabled())
-                .setDistortionCorrection(mCameraSettingsManager.DistortionCorrectionEnabled())
-                .setSensorOrientation(mCameraCharacteristics.get(CameraCharacteristics.SENSOR_ORIENTATION));
-
-        Size resolution = mCameraSettingsManager.getVideoSize();
-        metaBuilder.setResolution(
-                RecordingProtos.CameraInfo.Size.newBuilder()
-                        .setHeight(mSwappedDimensions ? resolution.getWidth() : resolution.getHeight())
-                        .setWidth(mSwappedDimensions ?  resolution.getHeight() : resolution.getWidth())
-        );
-        Rect arraySize = mCameraCharacteristics.get(CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE);
-        metaBuilder.setPreCorrectionActiveArraySize(
-                RecordingProtos.CameraInfo.Size.newBuilder()
-                        .setHeight(arraySize.height())
-                        .setWidth(arraySize.width())
-        );
-
-        Integer timestamp_source = mCameraCharacteristics.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE);
-        if (timestamp_source != null) {
-            metaBuilder.setTimestampSourceValue(timestamp_source);
-        }
-
-        Integer focus_cal = mCameraCharacteristics.get(CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION);
-        if (focus_cal != null) {
-            metaBuilder.setFocusCalibrationValue(focus_cal);
-        }
-
-        float[] lensTranslation = mCameraCharacteristics.get(CameraCharacteristics.LENS_POSE_TRANSLATION);
-        if (lensTranslation != null) {
-            for (float lT : lensTranslation) {
-                metaBuilder.addLensPoseTranslation(lT);
-            }
-        }
-
-        float[] lensRotation = mCameraCharacteristics.get(CameraCharacteristics.LENS_POSE_ROTATION);
-        if (lensRotation != null) {
-            for (float lR : lensRotation) {
-                metaBuilder.addLensPoseRotation(lR);
-            }
-        }
-
-        float[] intrinsics = mCameraCharacteristics.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION);
-        if ((intrinsics != null) && (abs(intrinsics[0]) > 0)) {
-            for (float e : mFocalLengthHelper.getTransformedIntrinsic()) {
-                metaBuilder.addIntrinsicParams(e);
-            }
-            for (float e : intrinsics) {
-                metaBuilder.addOriginalIntrinsicParams(e);
-            }
-        }
-
-        if (Build.VERSION.SDK_INT >= 28) {
-            float[] distortion = mCameraCharacteristics.get(CameraCharacteristics.LENS_DISTORTION);
-            if ((distortion != null) && (abs(distortion[0]) > 0)) {
-                for (float e : distortion) {
-                    metaBuilder.addDistortionParams(e);
-                }
-            }
-            Integer lensPoseReference = mCameraCharacteristics.get(CameraCharacteristics.LENS_POSE_REFERENCE);
-            if (lensPoseReference != null) {
-                metaBuilder.setLensPoseReferenceValue(lensPoseReference);
-            }
-        }
-        mRecordingWriter.queueData(metaBuilder.build());
-
-    }
-
-    private void writeCaptureData(CaptureResult result, Float focal_length_pix) {
-        RecordingProtos.VideoFrameMetaData.Builder frameBuilder = RecordingProtos.VideoFrameMetaData.newBuilder()
-                .setTimeNs(result.get(CaptureResult.SENSOR_TIMESTAMP))
-                .setFocalLengthMm(result.get(CaptureResult.LENS_FOCAL_LENGTH))
-                .setEstFocalLengthPix(focal_length_pix);
-
-        int focus_state = result.get(CaptureResult.CONTROL_AF_STATE);
-        frameBuilder.setFocusLocked(focus_state != CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN
-                                 && focus_state != CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN);
-
-        // The following values are allowed to be null
-        Long sExp = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
-        if (sExp != null) {
-            frameBuilder.setExposureTimeNs(sExp);
-        }
-
-        Long sDur = result.get(CaptureResult.SENSOR_FRAME_DURATION);
-        if (sDur != null) {
-            frameBuilder.setFrameDurationNs(sDur);
-        }
-
-        Long sRoll = result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW);
-        if (sRoll != null) {
-            frameBuilder.setFrameReadoutNs(sRoll);
-        }
-
-        Integer sSens = result.get(CaptureResult.SENSOR_SENSITIVITY);
-        if (sSens != null) {
-            frameBuilder.setIso(sSens);
-        }
-
-        Float fDist = result.get(CaptureResult.LENS_FOCUS_DISTANCE);
-        if (fDist != null) {
-            frameBuilder.setFocusDistanceDiopters(fDist);
-        }
-
-        // Crop region in active-array coordinates: if it moves frame to frame, EIS is on.
-        Rect crop = result.get(CaptureResult.SCALER_CROP_REGION);
-        if (crop != null) {
-            frameBuilder.setCropRegion(RecordingProtos.VideoFrameMetaData.Rect.newBuilder()
-                    .setLeft(crop.left)
-                    .setTop(crop.top)
-                    .setRight(crop.right)
-                    .setBottom(crop.bottom));
-        }
-
-        if (Build.VERSION.SDK_INT >= 28) {
-            OisSample[] oisSamples = result.get(CaptureResult.STATISTICS_OIS_SAMPLES);
-            if (oisSamples != null) {
-                for (OisSample sample : oisSamples) {
-                    float[] scaledSample = mFocalLengthHelper.transformOISSample(sample);
-                    RecordingProtos.VideoFrameMetaData.OISSample.Builder oisBuilder =
-                            RecordingProtos.VideoFrameMetaData.OISSample.newBuilder()
-                                    .setTimeNs(sample.getTimestamp())
-                                    .setXShift(scaledSample[0])
-                                    .setYShift(scaledSample[1]);
-                    frameBuilder.addOISSamples(oisBuilder);
-                }
-            }
-        }
-
-        writeFrameRadiometry(result, frameBuilder);
-
-        mRecordingWriter.queueData(frameBuilder.build());
-
-    }
-
-    /**
-     * Per-frame radiometry (ReconStab #39), everything the CaptureResult already carries so a
-     * floating auto-exposure can be undone at bake time and the ISO ceiling of #38 has a number.
-     * Every field is null-guarded: a HAL may report any subset, and a missing one is silence,
-     * not a zero.
-     */
-    private void writeFrameRadiometry(CaptureResult result,
-                                      RecordingProtos.VideoFrameMetaData.Builder b) {
-        android.hardware.camera2.params.RggbChannelVector gains =
-                result.get(CaptureResult.COLOR_CORRECTION_GAINS);
-        if (gains != null) {
-            b.addColorCorrectionGains(gains.getRed());
-            b.addColorCorrectionGains(gains.getGreenEven());
-            b.addColorCorrectionGains(gains.getGreenOdd());
-            b.addColorCorrectionGains(gains.getBlue());
-        }
-        android.hardware.camera2.params.ColorSpaceTransform xform =
-                result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM);
-        if (xform != null) {
-            for (int row = 0; row < 3; row++) {
-                for (int col = 0; col < 3; col++) {
-                    b.addColorCorrectionTransform(xform.getElement(col, row).floatValue());
-                }
-            }
-        }
-        Integer tonemap = result.get(CaptureResult.TONEMAP_MODE);
-        if (tonemap != null) {
-            b.setTonemapMode(tonemap);
-        }
-        Integer boost = result.get(CaptureResult.CONTROL_POST_RAW_SENSITIVITY_BOOST);
-        if (boost != null) {
-            b.setPostRawSensitivityBoost(boost);
-        }
-        float[] blackLevel = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL);
-        if (blackLevel != null) {
-            for (float v : blackLevel) {
-                b.addDynamicBlackLevel(v);
-            }
-        }
-        Integer aeState = result.get(CaptureResult.CONTROL_AE_STATE);
-        if (aeState != null) {
-            b.setAeState(aeState);
-        }
-        Integer awbState = result.get(CaptureResult.CONTROL_AWB_STATE);
-        if (awbState != null) {
-            b.setAwbState(awbState);
-        }
-        Integer aeMode = result.get(CaptureResult.CONTROL_AE_MODE);
-        if (aeMode != null) {
-            b.setAeMode(aeMode);
-        }
-        Integer awbMode = result.get(CaptureResult.CONTROL_AWB_MODE);
-        if (awbMode != null) {
-            b.setAwbMode(awbMode);
-        }
-        Float aperture = result.get(CaptureResult.LENS_APERTURE);
-        if (aperture != null) {
-            b.setLensAperture(aperture);
-        }
-        Integer lensState = result.get(CaptureResult.LENS_STATE);
-        if (lensState != null) {
-            b.setLensState(lensState);
-        }
-        // What the hardware DID about stabilization, not what we asked for (ReconStab #41).
-        // The request is set from a preference; the result is the HAL's answer, and on a vendor
-        // HAL the two are allowed to differ. A gyro-derived blur kernel is only valid while the
-        // optical path is fixed, so an unrecorded OIS is a silent invalidation of every kernel.
-        Integer ois = result.get(CaptureResult.LENS_OPTICAL_STABILIZATION_MODE);
-        if (ois != null) {
-            b.setLensOpticalStabilizationMode(ois);
-        }
-        Integer eis = result.get(CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE);
-        if (eis != null) {
-            b.setVideoStabilizationMode(eis);
-        }
-        if (Build.VERSION.SDK_INT >= 28) {
-            Integer distortion = result.get(CaptureResult.DISTORTION_CORRECTION_MODE);
-            if (distortion != null) {
-                b.setDistortionCorrectionMode(distortion);
-            }
-            Integer oisDataMode = result.get(CaptureResult.STATISTICS_OIS_DATA_MODE);
-            if (oisDataMode != null) {
-                b.setOisDataMode(oisDataMode);
-            }
-        }
-        Integer ev = result.get(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION);
-        if (ev != null) {
-            b.setAeExposureCompensation(ev);
-        }
-        // What the HAL did to the pixels before the matcher ever sees them (ReconStab #55).
-        // These were never set and never read, so the answer for every frame in the archive is
-        // "whatever the vendor's video default is" -- and the result is where it is settled,
-        // not the request, because a vendor HAL may decline what it is asked for.
-        Integer edge = result.get(CaptureResult.EDGE_MODE);
-        if (edge != null) {
-            b.setEdgeMode(edge);
-        }
-        Integer nr = result.get(CaptureResult.NOISE_REDUCTION_MODE);
-        if (nr != null) {
-            b.setNoiseReductionMode(nr);
-        }
-        // Intrinsics sampled WITHIN the capture (#50). API 35; this device runs 36 and lists the
-        // key on all seven cameras. Whether it fills it is a different question -- the key beside
-        // it, oisSamples, is listed on all seven and returns null on every frame -- so this is
-        // read null-guarded like everything else and graded PRESENT / EMPTY / ABSENT afterwards.
-        if (Build.VERSION.SDK_INT >= 35) {
-            android.hardware.camera2.params.LensIntrinsicsSample[] samples =
-                    result.get(CaptureResult.STATISTICS_LENS_INTRINSICS_SAMPLES);
-            if (samples != null) {
-                for (android.hardware.camera2.params.LensIntrinsicsSample s : samples) {
-                    RecordingProtos.VideoFrameMetaData.LensIntrinsicsSample.Builder sb =
-                            RecordingProtos.VideoFrameMetaData.LensIntrinsicsSample.newBuilder()
-                                    .setTimeNs(s.getTimestampNanos());
-                    float[] k = s.getLensIntrinsics();
-                    if (k != null) {
-                        for (float v : k) {
-                            sb.addIntrinsics(v);
-                        }
-                    }
-                    b.addLensIntrinsicsSamples(sb);
-                }
-            }
-        }
-        android.util.Pair<Double, Double>[] noise = result.get(CaptureResult.SENSOR_NOISE_PROFILE);
-        if (noise != null) {
-            for (android.util.Pair<Double, Double> p : noise) {
-                b.addNoiseProfile(p.first);
-                b.addNoiseProfile(p.second);
-            }
-        }
-        // Per-frame lens intrinsics, IF the HAL reports them dynamically (#31). Most devices only
-        // expose the static characteristic; where this is non-null it captures focus breathing.
-        float[] intrinsics = result.get(CaptureResult.LENS_INTRINSIC_CALIBRATION);
-        if (intrinsics != null) {
-            for (float v : intrinsics) {
-                b.addLensIntrinsicCalibration(v);
-            }
-        }
+        mRecordingWriter.queueData(FrameRecords.cameraInfo(mCameraSettingsManager,
+                mCameraCharacteristics, mFocalLengthHelper, mSwappedDimensions));
     }
 
     private void startBackgroundThread() {
