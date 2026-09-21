@@ -106,6 +106,12 @@ pip3 install protobuf pyquaternion
 Upstream's [calibration guide](calibration/README.md) and example scripts (e.g.
 [`data2statistics.py`](calibration/data2statistics.py)) still apply.
 
+[`analysis/`](analysis/README.md) holds this fork's own desk-side checks — do the rows describe
+the pixels, does each stream carry the lens the census says it does — and
+[`analysis/FINDINGS.md`](analysis/FINDINGS.md) is what they have found so far. Read it before
+trusting a stereo pair's depth: on the S24 Ultra the ultrawide stream is silently cropped at
+zoom 1.0, and pairs shot before `09e5e47` need their effective focal measured per session.
+
 ## Lineage and thanks
 
 None of this would exist without the original work:

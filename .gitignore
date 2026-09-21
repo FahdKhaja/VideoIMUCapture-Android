@@ -89,6 +89,9 @@ lint/tmp/
 __pycache__
 *.pyc
 
+# Pulled sessions for analysis/: photographs of wherever the phone was standing. Never committed.
+analysis/data/
+
 #Release
 android_app/app/release
 
