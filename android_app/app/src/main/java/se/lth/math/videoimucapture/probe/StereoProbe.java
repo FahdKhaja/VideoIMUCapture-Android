@@ -1,6 +1,7 @@
 package se.lth.math.videoimucapture.probe;
 
 import android.content.Context;
+import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
@@ -64,8 +65,30 @@ public class StereoProbe {
                 JSONArray logicals = new JSONArray();
                 JSONArray streaming = new JSONArray();
                 JSONArray zoom = new JSONArray();
+                JSONArray unreadable = new JSONArray();
+                // Attached BEFORE the loop, so whatever has been measured is in the file
+                // whatever happens next. They were attached after it, and the streaming stage
+                // ends by killing the camera service ON PURPOSE: the very next line --
+                // characteristics for the next camera id -- then threw "unknown device 1", and
+                // the exception took all three stages' results with it. Both zoom-probe runs to
+                // date (2026-09-20 19:32, 2026-09-21 08:58) wrote a 235-byte file for that
+                // reason; the verdict survived only because the zoom stage's frames are JPEGs.
+                root.put("logical_cameras", logicals);
+                root.put("streaming", streaming);
+                root.put("zoom", zoom);
+                root.put("unreadable_cameras", unreadable);
                 for (String id : manager.getCameraIdList()) {
-                    CameraCharacteristics ch = manager.getCameraCharacteristics(id);
+                    CameraCharacteristics ch;
+                    try {
+                        ch = manager.getCameraCharacteristics(id);
+                    } catch (CameraAccessException | IllegalArgumentException e) {
+                        // A camera that will not describe itself -- usually because the stage
+                        // before it has just taken the service down -- is noted and skipped.
+                        Log.w(TAG, "camera " + id + " unreadable, skipped: " + e);
+                        unreadable.put(new JSONObject().put("id", id)
+                                .put("error", String.valueOf(e)));
+                        continue;
+                    }
                     List<String> physicals = new ArrayList<>(ch.getPhysicalCameraIds());
                     if (physicals.size() < 2) {
                         continue;
@@ -87,9 +110,6 @@ public class StereoProbe {
                     s.put("cases", StreamingProbe.probeStreaming(manager, id, physicals, handler));
                     streaming.put(s);
                 }
-                root.put("logical_cameras", logicals);
-                root.put("streaming", streaming);
-                root.put("zoom", zoom);
             }
         } catch (Exception e) {
             Log.e(TAG, "probe failed: " + e);
