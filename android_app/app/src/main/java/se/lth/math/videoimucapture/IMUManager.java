@@ -108,6 +108,21 @@ public class IMUManager extends SensorEventCallback {
     private int angular_acc;
     private int mag_acc;
 
+    /**
+     * The operator's switch for the whole inertial stream (settings -> Sensor streams).
+     *
+     * Default ON, which is every clip in the archive. OFF is not a power saving: it is the
+     * only honest way to shoot a clip that is deliberately camera-only, and -- more often --
+     * the way to keep a phone whose gyro is lying from writing that lie into a file that
+     * looks complete. A disabled stream is announced on the recording readout and in the
+     * warning dialog rather than silently producing an empty IMU column, because "no IMU
+     * rows" and "IMU switched off" are the same file and very different facts.
+     */
+    public static final String PREF_IMU_ENABLED = "imu_enabled";
+
+    // Whether register() actually registered. Read from the UI thread for the readout.
+    private volatile boolean mStreamRegistered = false;
+
     private volatile boolean mRecordingInertialData = false;
     private RecordingWriter mRecordingWriter = null;
     private HandlerThread mSensorThread;
@@ -277,6 +292,38 @@ public class IMUManager extends SensorEventCallback {
 
     public Boolean sensorsExist() {
         return (mAccel != null) && (mGyro != null) && (mMag != null);
+    }
+
+    /** The operator's switch, read live so a change in settings takes effect on the next resume. */
+    public boolean isEnabledInSettings() {
+        return PreferenceManager.getDefaultSharedPreferences(mAppContext)
+                .getBoolean(PREF_IMU_ENABLED, true);
+    }
+
+    /** True only when listeners are actually attached, i.e. samples are arriving. */
+    public boolean isStreamActive() {
+        return mStreamRegistered;
+    }
+
+    /**
+     * One short readout for the recording HUD and the settings screen, in the same shape as
+     * the GNSS one: what the stream is doing right now, not what was configured.
+     */
+    public String statusText() {
+        if (!sensorsExist()) {
+            return "IMU: NONE";
+        }
+        if (!isEnabledInSettings()) {
+            return "IMU: OFF";
+        }
+        if (!mStreamRegistered) {
+            return "IMU: IDLE";
+        }
+        float hz = getSensorFrequency();
+        if (!(hz > 0f) || Float.isInfinite(hz)) {
+            return "IMU: WAIT";
+        }
+        return String.format(Locale.getDefault(), "IMU: %.0fHz", hz);
     }
 
     public void startRecording(RecordingWriter recordingWriter) {
@@ -459,6 +506,12 @@ public class IMUManager extends SensorEventCallback {
     }
 
     public float getSensorFrequency() {
+        // 0 rather than an infinity before the first pair of samples (or when the stream is
+        // switched off): this number goes into the file as well as onto the readout, and a
+        // non-finite float in a proto is a parse problem downstream rather than a missing one.
+        if (mEstimatedSensorRate <= 0) {
+            return 0f;
+        }
         return 1e9f/((float) mEstimatedSensorRate);
     }
 
@@ -652,6 +705,14 @@ public class IMUManager extends SensorEventCallback {
         if (!sensorsExist()) {
             return;
         }
+        if (!isEnabledInSettings()) {
+            // The operator turned the stream off. Nothing is registered, so nothing is
+            // recorded and nothing is buffered; the readout says IMU: OFF for the whole
+            // session so this is never discovered at the desk.
+            Log.i(TAG, "Inertial stream disabled in settings -- no IMU listeners registered.");
+            mStreamRegistered = false;
+            return;
+        }
         mSensorThread = new HandlerThread("Sensor thread",
                 Process.THREAD_PRIORITY_MORE_FAVORABLE);
         mSensorThread.start();
@@ -740,6 +801,7 @@ public class IMUManager extends SensorEventCallback {
         if (mLightIr != null) {
             mSensorManager.registerListener(this, mLightIr, SensorManager.SENSOR_DELAY_NORMAL, sensorHandler);
         }
+        mStreamRegistered = true;
     }
 
     /**
@@ -749,6 +811,14 @@ public class IMUManager extends SensorEventCallback {
         if (!sensorsExist()) {
             return;
         }
+        if (!mStreamRegistered) {
+            // register() bailed out -- disabled in settings -- so there is no sensor thread
+            // to quit and unregistering would NPE on it.
+            stopRecording();
+            return;
+        }
+        mStreamRegistered = false;
+        mEstimatedSensorRate = 0;
         mSensorManager.unregisterListener(this, mAccel);
         mSensorManager.unregisterListener(this, mGyro);
         mSensorManager.unregisterListener(this, mMag);

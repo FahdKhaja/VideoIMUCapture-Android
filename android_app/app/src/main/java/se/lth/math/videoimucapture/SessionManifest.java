@@ -74,6 +74,13 @@ public final class SessionManifest {
     private String mPairSequenceCutReason = null;
     private long mCameraErrorAtMs = -1;
     private int mStereoMetaRows = -1;
+    // Which sensor streams this session was opened with, and -- for GNSS -- what the receiver
+    // was doing at that moment. An empty IMU or GNSS column in the pb3 has several causes,
+    // and only the file can say which one it was.
+    private Boolean mImuEnabled = null;
+    private Boolean mImuRunning = null;
+    private Boolean mGnssEnabled = null;
+    private String mGnssStateAtStart = null;
 
     public SessionManifest(Context context, File dir, String mode,
                            String testTag) {
@@ -249,6 +256,23 @@ public final class SessionManifest {
         }
     }
 
+    /**
+     * What the sensor streams were doing when the session opened.
+     *
+     * The measured half of this receipt counts rows; it cannot say why a count is zero. A
+     * GNSS column with no rows is a clip shot indoors, a clip whose operator had denied the
+     * location permission, a clip shot with the device location switch off, or a clip shot
+     * deliberately without position -- four different verdicts, one empty column. This is the
+     * field that separates them, recorded at the only moment the answer is known.
+     */
+    public void noteSensorStreams(boolean imuEnabled, boolean imuRunning,
+                                  boolean gnssEnabled, String gnssStateAtStart) {
+        mImuEnabled = imuEnabled;
+        mImuRunning = imuRunning;
+        mGnssEnabled = gnssEnabled;
+        mGnssStateAtStart = gnssStateAtStart;
+    }
+
     public void noteBatteryAtStart(int percent) {
         mBatteryAtStart = percent;
     }
@@ -290,6 +314,17 @@ public final class SessionManifest {
                 expected.put("stereo_meta_rows", mStereoMetaRows);
             }
             root.put("expected", expected);
+
+            if (mImuEnabled != null) {
+                JSONObject streams = new JSONObject();
+                streams.put("imu_enabled", mImuEnabled);
+                streams.put("imu_running", mImuRunning);
+                streams.put("gnss_enabled", mGnssEnabled);
+                if (mGnssStateAtStart != null) {
+                    streams.put("gnss_state_at_start", mGnssStateAtStart);
+                }
+                root.put("streams", streams);
+            }
 
             JSONObject measured = measure();
             root.put("measured", measured);

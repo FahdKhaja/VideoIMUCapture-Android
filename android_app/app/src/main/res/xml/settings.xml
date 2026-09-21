@@ -63,6 +63,32 @@
     </PreferenceCategory>
 
     <PreferenceCategory
+        app:key="sensor_category"
+        app:title="Sensor streams">
+
+        <SwitchPreferenceCompat
+            app:key="imu_enabled"
+            app:title="Record IMU"
+            app:persistent="true"
+            app:defaultValue="true"
+            app:summary="Gyroscope, accelerometer and magnetometer, hardware-timestamped on the same clock as the frames. This is what makes a clip a measurement rather than a video, so it is ON for every clip in the archive; turn it off only for a deliberately camera-only take. While recording, the readout shows the delivered rate (IMU: 416Hz) or IMU: OFF, and the warning light comes on whenever the stream is not running." />
+
+        <SwitchPreferenceCompat
+            app:key="gnss_enabled"
+            app:title="Record GNSS"
+            app:persistent="true"
+            app:defaultValue="true"
+            app:summary="Position fixes, per-satellite raw measurements and broadcast ephemeris, from the GPS provider directly. Needs the location permission and the device location switch; the status line below says which of those is missing. While recording, the readout shows the live fix (GNSS: FIX 9/21sv +-4m), GNSS: NOFIX while searching, or the reason it is not running." />
+
+        <Preference
+            app:key="sensor_stream_status"
+            app:title="Stream status"
+            app:persistent="false"
+            app:selectable="true"
+            app:summary="Checking..." />
+    </PreferenceCategory>
+
+    <PreferenceCategory
         app:key="stabilization_category"
         app:title="Stabilization">
 

@@ -57,6 +57,18 @@ are welcome, and fixes arrive on hobby time, if at all.
   the current focal length. Needs *Freeze exposure* off. Never sets a manual exposure, so it
   cannot black out a frame; but it is untested on a moving device — verify before trusting it.
 
+- **Sensor streams, switchable and visible**: a *Sensor streams* section in settings with
+  **Record IMU** and **Record GNSS** (both on by default), a live **Stream status** line under
+  them, and the same facts on the capture readout while you shoot. GNSS shows the fix itself —
+  `GNSS: FIX 9/21sv +-4m` when it has one, `GNSS: NOFIX 6sv` while it searches, and
+  `GNSS: OFF` / `NOPERM` / `LOC-OFF` when it is switched off, unpermitted, or the device's
+  location switch is off. The IMU field says `IMU: 416Hz` or `IMU: OFF` for the same reason.
+  Tapping Stream status goes straight to whatever needs granting or turning on; pressing
+  record with a stream missing raises a one-line notice at the press; the warning light blinks
+  for anything fixable; and the session's `session.json` records under `streams` what the clip
+  was actually shot with. Previously all of this was silent: a denied location permission
+  produced an empty GNSS column, and nothing anywhere said so until the desk.
+
 Everything lands in `Android/data/se.lth.math.videoimucapture/files/<date>/` as
 `video_recording.mp4` plus a protobuf sidecar (`video_meta.pb3`), stills alongside.
 **Nothing leaves the device** — the upstream Firebase analytics were removed entirely.

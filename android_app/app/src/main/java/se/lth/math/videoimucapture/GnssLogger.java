@@ -19,11 +19,13 @@ import android.os.SystemClock;
 import android.util.Log;
 
 import androidx.core.content.ContextCompat;
+import androidx.preference.PreferenceManager;
 
 import android.Manifest;
 import com.google.protobuf.ByteString;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * GPS track logger built on LocationManager (GPS provider directly — no Play Services,
@@ -39,9 +41,134 @@ public class GnssLogger implements LocationListener {
     private static final String TAG = "GnssLogger";
     private static final long UPDATE_INTERVAL_MS = 1000;
 
+    /**
+     * The operator's switch for the whole GNSS stream (settings -> Sensor streams).
+     *
+     * Default ON. OFF stops the receiver being asked for anything at all -- no fixes, no raw
+     * measurements, no ephemeris -- which is the difference between a clip shot indoors that
+     * merely never got a fix and a clip that was deliberately shot without position. Both
+     * produce an empty GNSS column; only one of them is a fault, and until the switch existed
+     * the file could not tell them apart.
+     */
+    public static final String PREF_GNSS_ENABLED = "gnss_enabled";
+
+    /** Why the stream is not running, or that it is. Drives the readout and the warning dialog. */
+    public enum State {
+        /** Listeners attached and a recent fix is in hand. */
+        FIX,
+        /** Listeners attached, satellites may be visible, but no fix yet. */
+        SEARCHING,
+        /** Switched off by the operator in settings. */
+        DISABLED,
+        /** Location permission has not been granted. */
+        NO_PERMISSION,
+        /** Permission is there, but the device's own location switch is off. */
+        PROVIDER_OFF,
+        /** Not registered because the activity is not resumed. */
+        IDLE
+    }
+
+    /** An immutable snapshot, so the UI thread never reads half-updated counters. */
+    public static final class Status {
+        public final State state;
+        public final int satellitesVisible;
+        public final int satellitesUsedInFix;
+        /** Horizontal accuracy of the last fix in metres, NaN if unknown or no fix yet. */
+        public final float accuracyM;
+        /** Age of the last fix in seconds, -1 if there has not been one this session. */
+        public final long fixAgeS;
+
+        Status(State state, int visible, int used, float accuracyM, long fixAgeS) {
+            this.state = state;
+            this.satellitesVisible = visible;
+            this.satellitesUsedInFix = used;
+            this.accuracyM = accuracyM;
+            this.fixAgeS = fixAgeS;
+        }
+
+        /** True when fixes are arriving, i.e. the clip is carrying a position track. */
+        public boolean hasFix() {
+            return state == State.FIX;
+        }
+
+        /** True when the stream could be producing data and simply is not yet. */
+        public boolean isRunning() {
+            return state == State.FIX || state == State.SEARCHING;
+        }
+
+        /**
+         * One short field for the recording HUD. Deliberately the same shape as the IMU
+         * readout: the operator is reading a dense row mid-walk and should not have to parse
+         * a sentence.
+         */
+        public String readout() {
+            switch (state) {
+                case DISABLED:
+                    return "GNSS: OFF";
+                case NO_PERMISSION:
+                    return "GNSS: NOPERM";
+                case PROVIDER_OFF:
+                    return "GNSS: LOC-OFF";
+                case IDLE:
+                    return "GNSS: IDLE";
+                case SEARCHING:
+                    return String.format(Locale.getDefault(), "GNSS: NOFIX %dsv",
+                            satellitesVisible);
+                case FIX:
+                default:
+                    String acc = Float.isNaN(accuracyM)
+                            ? "" : String.format(Locale.getDefault(), " +-%.0fm", accuracyM);
+                    return String.format(Locale.getDefault(), "GNSS: FIX %d/%dsv%s",
+                            satellitesUsedInFix, satellitesVisible, acc);
+            }
+        }
+
+        /** A sentence for the settings screen and the warning dialog. */
+        public String describe() {
+            switch (state) {
+                case DISABLED:
+                    return "Off. No position track will be recorded.";
+                case NO_PERMISSION:
+                    return "Location permission not granted, so no position track will be "
+                            + "recorded. Tap to grant it.";
+                case PROVIDER_OFF:
+                    return "The device's location switch is off, so no position track will be "
+                            + "recorded. Tap to open location settings.";
+                case IDLE:
+                    return "Idle. Starts when the capture screen is open.";
+                case SEARCHING:
+                    return satellitesVisible == 0
+                            ? "Searching. No satellites visible yet -- indoors this can stay "
+                            + "this way indefinitely."
+                            : String.format(Locale.getDefault(),
+                            "Searching. %d satellites visible, no fix yet.", satellitesVisible);
+                case FIX:
+                default:
+                    String acc = Float.isNaN(accuracyM)
+                            ? "" : String.format(Locale.getDefault(), ", +-%.0f m", accuracyM);
+                    return String.format(Locale.getDefault(),
+                            "Fix: %d of %d satellites used%s.",
+                            satellitesUsedInFix, satellitesVisible, acc);
+            }
+        }
+    }
+
     private final LocationManager mLocationManager;
     private volatile RecordingWriter mRecordingWriter = null;
     private boolean mRegistered = false;
+    // Why registration did not happen, so the readout can say which of the reasons it was
+    // rather than only that there is no GNSS.
+    private volatile State mUnregisteredReason = State.IDLE;
+    // Live counters, written on the main looper by the GNSS callbacks and read from the UI
+    // thread for the readout. Published into an immutable Status on read.
+    private volatile int mSatellitesVisible = 0;
+    private volatile int mSatellitesUsedInFix = 0;
+    private volatile float mLastAccuracyM = Float.NaN;
+    private volatile long mLastFixElapsedMs = -1;
+    // A fix older than this is not a fix any more: at walking pace the phone is fifteen
+    // metres from where that position was taken, and a readout still claiming FIX is worse
+    // than one admitting NOFIX.
+    private static final long FIX_STALE_MS = 15000;
     // Raw GNSS (ReconStab #39/#31): the per-satellite measurements and constellation status,
     // registered alongside the fixes. Callbacks fire on the main looper; they write only while
     // a recording is active, like the fixes.
@@ -59,16 +186,49 @@ public class GnssLogger implements LocationListener {
                 == PackageManager.PERMISSION_GRANTED;
     }
 
+    /** The operator's switch, read live so a change in settings takes effect on next resume. */
+    public static boolean isEnabledInSettings(Context context) {
+        return PreferenceManager.getDefaultSharedPreferences(context)
+                .getBoolean(PREF_GNSS_ENABLED, true);
+    }
+
+    /** Whether the device's own location switch is on. Separate from the app's permission. */
+    public boolean isProviderEnabled() {
+        return mLocationManager != null
+                && mLocationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
+    }
+
+    /** What the stream is doing right now. Cheap enough to call on every capture result. */
+    public Status status() {
+        if (!mRegistered) {
+            return new Status(mUnregisteredReason, 0, 0, Float.NaN, -1);
+        }
+        long fixAgeMs = mLastFixElapsedMs < 0
+                ? -1 : SystemClock.elapsedRealtime() - mLastFixElapsedMs;
+        boolean fresh = fixAgeMs >= 0 && fixAgeMs < FIX_STALE_MS;
+        return new Status(fresh ? State.FIX : State.SEARCHING,
+                mSatellitesVisible, mSatellitesUsedInFix,
+                fresh ? mLastAccuracyM : Float.NaN,
+                fixAgeMs < 0 ? -1 : fixAgeMs / 1000);
+    }
+
     public void register(Context context) {
         if (mRegistered || mLocationManager == null) {
             return;
         }
+        if (!isEnabledInSettings(context)) {
+            Log.i(TAG, "GNSS stream switched off in settings; receiver not asked for anything.");
+            mUnregisteredReason = State.DISABLED;
+            return;
+        }
         if (!hasPermission(context)) {
             Log.i(TAG, "No location permission — GNSS stream disabled.");
+            mUnregisteredReason = State.NO_PERMISSION;
             return;
         }
         if (!mLocationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
             Log.i(TAG, "GPS provider disabled — GNSS stream disabled.");
+            mUnregisteredReason = State.PROVIDER_OFF;
             return;
         }
         try {
@@ -76,9 +236,11 @@ public class GnssLogger implements LocationListener {
                     LocationManager.GPS_PROVIDER, UPDATE_INTERVAL_MS, 0f, this, Looper.getMainLooper());
             registerRaw();
             mRegistered = true;
+            mUnregisteredReason = State.IDLE;
             Log.d(TAG, "GNSS updates registered.");
         } catch (SecurityException e) {
             Log.w(TAG, "Location permission revoked mid-flight: " + e);
+            mUnregisteredReason = State.NO_PERMISSION;
         }
     }
 
@@ -145,6 +307,11 @@ public class GnssLogger implements LocationListener {
                 mNavCallback = null;
             }
             mRegistered = false;
+            mUnregisteredReason = State.IDLE;
+            mSatellitesVisible = 0;
+            mSatellitesUsedInFix = 0;
+            mLastAccuracyM = Float.NaN;
+            mLastFixElapsedMs = -1;
         }
     }
 
@@ -314,12 +481,24 @@ public class GnssLogger implements LocationListener {
     }
 
     private void onSatelliteStatus(GnssStatus status) {
+        int n = status.getSatelliteCount();
+        int used = 0;
+        // The counters are kept up to date whether or not a recording is running: the
+        // operator needs to watch the receiver lock on BEFORE pressing record, which is the
+        // whole reason this logger registers while merely resumed.
+        for (int i = 0; i < n; i++) {
+            if (status.usedInFix(i)) {
+                used++;
+            }
+        }
+        mSatellitesVisible = n;
+        mSatellitesUsedInFix = used;
+
         RecordingWriter writer = mRecordingWriter;
         if (writer == null || !writer.isRecording()) {
             return;
         }
-        int n = status.getSatelliteCount();
-        int used = 0;
+        used = 0;
         RecordingProtos.GnssStatusData.Builder b =
                 RecordingProtos.GnssStatusData.newBuilder()
                         .setTimeNs(SystemClock.elapsedRealtimeNanos())
@@ -358,6 +537,11 @@ public class GnssLogger implements LocationListener {
 
     @Override
     public void onLocationChanged(Location loc) {
+        // Freshness first, for the same reason as the satellite counters: the readout has to
+        // be able to say FIX while the operator is still deciding whether to press record.
+        mLastFixElapsedMs = SystemClock.elapsedRealtime();
+        mLastAccuracyM = loc.hasAccuracy() ? loc.getAccuracy() : Float.NaN;
+
         RecordingWriter writer = mRecordingWriter;
         if (writer == null || !writer.isRecording()) {
             return;
@@ -400,5 +584,12 @@ public class GnssLogger implements LocationListener {
 
     @Override
     public void onProviderDisabled(String provider) {
+        // The device's location switch went off underneath a registered listener. No further
+        // fixes will arrive, so stop the readout claiming one it is no longer getting.
+        if (LocationManager.GPS_PROVIDER.equals(provider)) {
+            Log.i(TAG, "GPS provider turned off mid-session.");
+            mLastFixElapsedMs = -1;
+            mSatellitesUsedInFix = 0;
+        }
     }
 }

@@ -25,7 +25,23 @@ final class SessionReceipts {
         SessionManifest manifest = new SessionManifest(activity, dir, mode, testTag);
         manifest.noteFreeAtStart(StorageGuard.freeBytes(new File(activity.getResultRoot())));
         manifest.noteBatteryAtStart(BatteryGuard.percent(activity));
+        noteSensorStreams(manifest, activity);
         return manifest;
+    }
+
+    /**
+     * Which sensor streams this session opened with. Written at open rather than at seal
+     * because the question is what the clip was SHOT with; a permission granted halfway
+     * through does not retrofit a position track onto the first half.
+     */
+    static void noteSensorStreams(SessionManifest manifest, CameraCaptureActivity activity) {
+        IMUManager imu = activity.getmImuManager();
+        GnssLogger gnss = activity.getmGnssLogger();
+        manifest.noteSensorStreams(
+                imu != null && imu.isEnabledInSettings(),
+                imu != null && imu.isStreamActive(),
+                GnssLogger.isEnabledInSettings(activity),
+                gnss == null ? "unavailable" : gnss.status().state.name());
     }
 
     /** What the session cost: the worst thermal status it reached and the charge it ended on. */

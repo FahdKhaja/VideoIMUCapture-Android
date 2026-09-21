@@ -40,6 +40,8 @@ import java.util.ArrayList;
  */
 class PermissionHelper {
     public static final int RC_PERMISSION_REQUEST = 9222;
+    /** A second code, for the location-only prompt raised from the settings screen. */
+    public static final int RC_LOCATION_REQUEST = 9223;
 
     public static boolean hasCameraPermission(Activity activity) {
         return ContextCompat.checkSelfPermission(activity,
@@ -59,6 +61,41 @@ class PermissionHelper {
         }
         ActivityCompat.requestPermissions(activity,
                 permissions.toArray(new String[0]), RC_PERMISSION_REQUEST);
+    }
+
+    public static boolean hasLocationPermission(Activity activity) {
+        return ContextCompat.checkSelfPermission(activity,
+                Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /**
+     * Ask for location on its own, from the settings screen.
+     *
+     * Separate from the launch prompt because the launch prompt is asked once, before the
+     * operator has any idea what the app does with location -- and a "deny" there used to be
+     * the end of the matter: the GNSS stream was silently absent from every clip afterwards,
+     * with nothing in the UI that could ask again. Turning the GNSS switch on is an explicit
+     * request for the thing the permission is for, which is the right moment to ask.
+     */
+    public static void requestLocationPermission(Activity activity) {
+        ActivityCompat.requestPermissions(activity,
+                new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, RC_LOCATION_REQUEST);
+    }
+
+    /**
+     * True when the system will no longer show the prompt -- permanently denied. The only way
+     * on from here is the app's own settings page, so the UI has to say that rather than
+     * raising a dialog the user will never see.
+     */
+    public static boolean locationPermanentlyDenied(Activity activity) {
+        return !hasLocationPermission(activity)
+                && !ActivityCompat.shouldShowRequestPermissionRationale(
+                        activity, Manifest.permission.ACCESS_FINE_LOCATION);
+    }
+
+    /** The device's location switch, which is not the same thing as the app's permission. */
+    public static void launchLocationSettings(Activity activity) {
+        activity.startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));
     }
 
     /**

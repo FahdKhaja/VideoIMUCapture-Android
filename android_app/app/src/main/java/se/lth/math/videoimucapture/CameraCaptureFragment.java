@@ -98,6 +98,9 @@ public class CameraCaptureFragment extends Fragment
     private IMUManager getmImuManager() {
         return ((CameraCaptureActivity) getActivity()).getmImuManager();
     };
+    private GnssLogger getmGnssLogger() {
+        return ((CameraCaptureActivity) getActivity()).getmGnssLogger();
+    };
     private Camera2Proxy getmCamera2Proxy() {
         return ((CameraCaptureActivity) getActivity()).getmCamera2Proxy();
     };
@@ -489,6 +492,45 @@ public class CameraCaptureFragment extends Fragment
         if (!getmImuManager().sensorsExist()) {
             builder.append("- ");
             builder.append(getResources().getString(R.string.warning_text_imu_missing));
+            builder.append("\n\n");
+        } else if (!getmImuManager().isEnabledInSettings()) {
+            builder.append("- ");
+            builder.append(getResources().getString(R.string.warning_text_imu_disabled));
+            builder.append("\n\n");
+        }
+        // The GNSS stream, in the same dialog as everything else that makes this capture
+        // something other than what the operator thinks they are shooting. Four of these are
+        // states the operator can fix on the spot, which is the only reason it is worth
+        // interrupting them: a permission to grant, a device switch to turn on, an app switch
+        // to flip, or ten more seconds standing still before pressing record.
+        GnssLogger gnssLogger = getmGnssLogger();
+        if (gnssLogger != null) {
+            switch (gnssLogger.status().state) {
+                case DISABLED:
+                    builder.append("- ");
+                    builder.append(getResources().getString(R.string.warning_text_gnss_disabled));
+                    builder.append("\n\n");
+                    break;
+                case NO_PERMISSION:
+                    builder.append("- ");
+                    builder.append(getResources()
+                            .getString(R.string.warning_text_gnss_no_permission));
+                    builder.append("\n\n");
+                    break;
+                case PROVIDER_OFF:
+                    builder.append("- ");
+                    builder.append(getResources()
+                            .getString(R.string.warning_text_gnss_provider_off));
+                    builder.append("\n\n");
+                    break;
+                case SEARCHING:
+                    builder.append("- ");
+                    builder.append(getResources().getString(R.string.warning_text_gnss_no_fix));
+                    builder.append("\n\n");
+                    break;
+                default:
+                    break;
+            }
         }
 
         args.putString("message", builder.toString());
@@ -685,8 +727,20 @@ public class CameraCaptureFragment extends Fragment
                         "null ms" :
                         String.format(Locale.getDefault(), "Exp: %.2f ms",
                                 exposureTimeNs / 1000000.0);
-        final String imuHz = String.format(Locale.getDefault(),  "IMU: %.0fHz",
-                getmImuManager().getSensorFrequency());
+        // The inertial stream, as a state rather than only a number: OFF, NONE, IDLE, WAIT
+        // or the delivered rate. A rate of 0 and a stream switched off used to look the same.
+        final String imuHz = getmImuManager().statusText();
+        // THE FIX, on the readout, always -- not only while recording.
+        //
+        // The GNSS stream registers as soon as the capture screen is resumed and writes only
+        // while recording, which is the right behaviour and was completely invisible: an
+        // operator standing outside waiting for the receiver to lock had nothing to watch,
+        // and a clip started before the first fix carried no position track without ever
+        // saying so. The field says which of the states it is in -- OFF, NOPERM, LOC-OFF,
+        // NOFIX with the satellite count, or FIX with the satellites used and the accuracy --
+        // so the choice to wait ten more seconds is one that can actually be made.
+        GnssLogger gnssLogger = getmGnssLogger();
+        final String gnss = gnssLogger == null ? "" : "|" + gnssLogger.status().readout();
         // THE CLOCK. The operator could not see how long a take had run. Refreshed with every
         // capture result, so it costs nothing extra; the battery temperature rides along because
         // a five-minute walk is exactly when it starts to matter.
@@ -759,7 +813,7 @@ public class CameraCaptureFragment extends Fragment
             }
         }
         final String line = "|" + hold + smear + batt + room + clock + pairs + ev + sfl + "|"
-                + sexpotime + "|" + imuHz + "|" + heat;
+                + sexpotime + "|" + imuHz + gnss + "|" + heat;
 
         getActivity().runOnUiThread(() -> {
             if (mCaptureResultText != null) {
@@ -797,11 +851,24 @@ public class CameraCaptureFragment extends Fragment
             // further down the walk, and nothing in the resulting file would look wrong.
             boolean batching = PreferenceManager
                     .getDefaultSharedPreferences(getActivity()).getInt("imu_batch_ms", 0) > 0;
+            // A stream that is not going to record is the same class of fact as OIS being
+            // on: the clip will not contain what the operator believes it contains. The
+            // three fixable GNSS states are in here; SEARCHING deliberately is not, because
+            // indoors it is the normal state and a light that blinks through every indoor
+            // session is a light nobody reads. Searching is on the readout and in the dialog.
+            GnssLogger gnssLogger = getmGnssLogger();
+            GnssLogger.State gnssState =
+                    gnssLogger == null ? GnssLogger.State.IDLE : gnssLogger.status().state;
+            boolean gnssBroken = gnssState == GnssLogger.State.DISABLED
+                    || gnssState == GnssLogger.State.NO_PERMISSION
+                    || gnssState == GnssLogger.State.PROVIDER_OFF;
             enableWarning(cameraSettingsManager.OISEnabled()
                     || cameraSettingsManager.DVSEnabled()
                     || cameraSettingsManager.DistortionCorrectionEnabled()
                     || batching
-                    || !getmImuManager().sensorsExist());
+                    || !getmImuManager().sensorsExist()
+                    || !getmImuManager().isEnabledInSettings()
+                    || gnssBroken);
         }
     }
 

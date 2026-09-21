@@ -32,5 +32,10 @@
     <string name="grant_permission_button">Grant Permission</string>
     <string name="decline_permission_button">Keep it useless</string>
     <string name="warning_text_imu_missing">Cannot find IMU sensor</string>
+    <string name="warning_text_imu_disabled">IMU recording is switched OFF in settings (Sensor streams). This clip will have video and no inertial data, so it cannot be used for visual-inertial work.</string>
+    <string name="warning_text_gnss_disabled">GNSS recording is switched OFF in settings (Sensor streams). This clip will carry no position track, no raw measurements and no ephemeris.</string>
+    <string name="warning_text_gnss_no_permission">GNSS recording is enabled but the location permission has not been granted, so no position track will be recorded. Grant it from Settings -> Sensor streams -> Stream status.</string>
+    <string name="warning_text_gnss_provider_off">GNSS recording is enabled but the device location switch is off, so no position track will be recorded. Turn location on from Settings -> Sensor streams -> Stream status.</string>
+    <string name="warning_text_gnss_no_fix">GNSS is running but has no fix yet. Recording now will start the clip without a position track; the track begins whenever the first fix lands.</string>
     <string name="warning_text_distortion">Distrotion Correction enabled, distortion parameters are invalid.</string>
 </resources>

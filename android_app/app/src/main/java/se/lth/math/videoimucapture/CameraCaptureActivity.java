@@ -186,12 +186,93 @@ public class CameraCaptureActivity extends AppCompatActivity {
         mImuManager.startRecording(writer);
         mGnssLogger.startRecording(writer);
         mThermalLogger.startRecording(writer);
+        announceSensorStreams();
+    }
+
+    /**
+     * Say, at the press, what this session is about to be missing.
+     *
+     * The capture readout carries the same facts continuously and the warning light blinks
+     * for the fixable ones, but both are things the operator has to look at. A session is
+     * committed to at the press, and the streams that will be absent from it are worth one
+     * line of interruption at exactly that moment -- it is the last point at which stopping,
+     * granting a permission and starting again costs nothing but the press.
+     *
+     * Here rather than in the record button for the same reason startSensorStreams is here:
+     * three paths open a session, and a notice hand-copied into one of them is a notice that
+     * the other two will quietly lose.
+     *
+     * Silent when everything is running, which is the normal case -- a notice that appears
+     * every time is a notice nobody reads.
+     */
+    private void announceSensorStreams() {
+        StringBuilder sb = new StringBuilder();
+        if (!mImuManager.sensorsExist()) {
+            sb.append("no IMU on this device");
+        } else if (!mImuManager.isEnabledInSettings()) {
+            sb.append("IMU OFF -- no inertial data in this session");
+        }
+        String gnssNote = null;
+        switch (mGnssLogger.status().state) {
+            case DISABLED:
+                gnssNote = "GNSS OFF -- no position track";
+                break;
+            case NO_PERMISSION:
+                gnssNote = "GNSS: no location permission -- no position track";
+                break;
+            case PROVIDER_OFF:
+                gnssNote = "GNSS: device location is off -- no position track";
+                break;
+            case SEARCHING:
+                gnssNote = "GNSS: no fix yet -- the track starts when one lands";
+                break;
+            default:
+                break;
+        }
+        if (gnssNote != null) {
+            if (sb.length() > 0) {
+                sb.append("\n");
+            }
+            sb.append(gnssNote);
+        }
+        if (sb.length() == 0) {
+            return;
+        }
+        final String message = sb.toString();
+        runOnUiThread(() -> Toast.makeText(this, message, Toast.LENGTH_LONG).show());
     }
 
     public void stopSensorStreams() {
         mImuManager.stopRecording();
         mGnssLogger.stopRecording();
         mThermalLogger.stopRecording();
+    }
+
+    /**
+     * Re-apply the IMU and GNSS switches (settings -> Sensor streams) without waiting for the
+     * activity to be paused and resumed.
+     *
+     * Registration happens in onResume, and the settings screen does not pause the activity,
+     * so a switch flipped there would otherwise not take effect until the app was backgrounded
+     * -- and the operator would be looking at a status line that disagreed with the switch
+     * immediately above it.
+     *
+     * Refuses while a recording is running, because unregistering the IMU mid-clip would end
+     * the inertial stream in the middle of a file that claims to have one. Returns false so
+     * the caller can say so rather than silently doing nothing.
+     */
+    public boolean restartSensorStreams() {
+        if (sRecordingWriter != null && sRecordingWriter.isRecording()) {
+            return false;
+        }
+        mImuManager.unregister();
+        mImuManager.register();
+        mGnssLogger.unregister();
+        mGnssLogger.register(this);
+        if (mCameraCaptureFragment != null) {
+            mCameraCaptureFragment.updateControls();
+        }
+        return true;
     }
     public CaptureModeManager getmCaptureModeManager() {
         return mCaptureModeManager;
