@@ -149,10 +149,12 @@ And one the receipt did not catch: the 18:53 L1 said `agrees: true` while logcat
   5x's FOV. **H1/H2, I1/I2, O1/O2** need a walk. None is drivable from a still phone.
 - **Periodic pairs** still carry the zoom-1.0 crop with nothing in the row to say so.
 - **"1 frame records lost"** appeared on W2 and N1 but not W1 or N2 — one intermittent loss
-  per clip. Smells like a clip-edge off-by-one. Not yet investigated, no issue filed.
+  per clip; on the full count, four clips of six. Smells like a start-edge race in
+  `RecordingWriter`. Which counter it is has not been read yet. Issue #3.
 - **W on the ultrawide** needs a proper scene (above).
-- **Downstream**: the crop finding bears on ReconStab #6 and the N1/N2 numbers on ReconStab
-  #55. Neither has been written up there yet.
+- **Downstream**: the crop finding is written up on ReconStab #6 and the N1/N2 numbers on
+  ReconStab #55 (2026-09-21). Still owed there: N1/N2 scored by the matcher on a real route,
+  and a per-session effective focal for every archive pair.
 - **Code structure**: a modularization pass is due (asked for 2026-09-20). The day's fixes kept
   landing in the same four files. Natural cuts: a `stereo/` package (one-shot, periodic,
   sequence, metadata rows) out of `StillCaptureManager`; a `session/` package (manifest,
