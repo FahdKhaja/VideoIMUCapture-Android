@@ -17,8 +17,16 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up the Android SDK
-        uses: android-actions/setup-android@v3
+      # The runner image ships the Android SDK already; setup-android only gets in the
+      # way (it insists on the long-obsolete "tools" package). All this needs is the
+      # platform and build-tools the project compiles against.
+      - name: Android SDK packages
+        run: |
+          set -e
+          SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -name sdkmanager -type f | head -1)"
+          echo "sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0" > /dev/null
 
       - name: Build the debug APK
         working-directory: android_app
