@@ -49,5 +49,5 @@ $dir = Split-Path $sealed -Parent
 "== receipt: $dir  (+$([int]((Get-Date) - $t0).TotalSeconds) s)"
 adb shell "cat $sealed" | Select-String -Pattern '"git_sha"|"test_cell"|"stills_fired"|"stereo_pairs_armed"|"stereo_meta_rows"|"video"|"video_bytes"|"video_file_complete"|"stills_jpg"|"stereo_halves"|"stereo_pairs_complete"|"lenses_seen"|"meta_written"|"complete"|"camera_error"|"agrees"|"summary"' | ForEach-Object { "   " + $_.Line.Trim() }
 $p = (adb shell pidof se.lth.math.videoimucapture) -join ''
-$log = adb logcat -d --pid=$p 2>$null | Select-String -Pattern "CAMERA_ERROR|device error|not valid|Exception|incomplete|periodic stereo|pair from stream|run stopped|video session|SessionManifest" | ForEach-Object { $_.Line.Substring(19, [Math]::Min(120, $_.Line.Length-19)) }
-"== log:"; $log | Select-Object -Last 12 | ForEach-Object { "   $_" }
+$log = adb logcat -d --pid=$p 2>$null | Select-String -Pattern "CAMERA_ERROR|device error|not valid|Exception|FATAL|incomplete|periodic stereo|pair from stream|preview restored|could not restore|focus stack|lens pair sequence|object composite|run stopped|video session|sealing|SessionManifest" | ForEach-Object { $_.Line.Substring(19, [Math]::Min(120, $_.Line.Length-19)) }
+"== log:"; $log | Select-Object -Last 24 | ForEach-Object { "   $_" }
